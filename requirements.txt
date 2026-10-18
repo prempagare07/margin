@@ -12,7 +12,8 @@ sentry-sdk>=2.35
 standardwebhooks
 apscheduler>=3.10,<4
 stripe
-composio
+composio==0.28.0
+jsonschema==4.26.0
 plaid-python
 icalendar
 python-dateutil

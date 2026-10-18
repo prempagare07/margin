@@ -51,6 +51,19 @@ await send_text(user_id, "You've spent 70% of your weekly budget.")
 
 ## Alex → Prem (what Prem's side expects from Alex's code)
 
+### Composio integration specification
+
+[COMPOSIO_SPEC.md](COMPOSIO_SPEC.md) defines the adapter interface and
+behavior/acceptance requirements for account connections, Gmail/Slack reads,
+Calendar availability, source retrieval, and approved event/draft creation. It
+also assigns execution-claim ownership and records the remaining agent/approval
+wiring. The facade is implemented in `integrations/composio_tools.py`; see
+[COMPOSIO.md](COMPOSIO.md) for exact stored action params, settings, cache
+helpers, tests, and live read verification. Composio writes are claimed by the
+adapter: the orchestrator must approve with `repo.approve_plan`, then call
+`execute_approved_action` without pre-claiming the action. Agent extraction,
+gather assembly, and replacement of simulated execution remain teammate work.
+
 ### Canvas feed reader and connection page
 
 Implemented in `integrations/canvas_client.py`, `web/canvas_connect.py`, and
@@ -92,6 +105,7 @@ async def save_connection(
     secret: dict | None = None, status: str = "active",
 ) -> None: ...
 async def get_connection(user_id: str, provider: str) -> dict | None: ...
+async def set_connection_status(user_id: str, provider: str, account_id: str | None, status: str) -> None: ...
 
 # Plans (needed by core/approval.py)
 async def insert_plan(plan_id: str, user_id: str, actions: list[dict]) -> None: ...
@@ -140,6 +154,7 @@ async def update_nudge(nudge_id: str, user_id: str, reply: str, action_taken: st
 async def last_items_by_source(user_id: str, source: str) -> list[dict]: ...
 async def items_in_window(user_id: str, start: str, end: str) -> list[dict]: ...
 async def upsert_items(items: list[dict]) -> None: ...
+async def get_item(user_id: str, item_id: str) -> dict | None: ...
 async def cached_gather_result(
     request_id: str, agent: str, user_id: str, sources: list[str],
     window_start: str, window_end: str, *, error: str,
@@ -204,6 +219,10 @@ Item and cache semantics:
   An empty cache has no staleness timestamp and still includes the error.
   Cached events do not establish free slots; Planner must recompute those.
   Source-removal/snapshot reconciliation is left to the integration layer.
+- For Composio, use `composio_tools.cached_gather_result` instead: it also filters
+  the selected account and calendars/channels. Use `composio_tools.cache_items`
+  to retain saved IDs and local completion state in returned fresh Items. See
+  [COMPOSIO.md](COMPOSIO.md) for current-lookback undated messages.
 
 Plan and execution semantics:
 

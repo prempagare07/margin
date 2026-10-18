@@ -1,0 +1,1598 @@
+{
+  "GOOGLECALENDAR_LIST_CALENDARS": {
+    "version": "20261010_00",
+    "input_parameters": {
+      "type": "object",
+      "title": "ListCalendarsRequest",
+      "properties": {
+        "page_token": {
+          "type": "string",
+          "title": "Page Token",
+          "examples": [
+            " nextPageToken123"
+          ],
+          "description": "Token for the page of results to return, from a previous response.",
+          "human_parameter_name": "Page Token",
+          "human_parameter_description": "If you\u2019re continuing from a previous list, paste the page token here to get the next set of calendars. Leave blank to start from the beginning."
+        },
+        "sync_token": {
+          "type": "string",
+          "title": "Sync Token",
+          "examples": [
+            "syncToken123"
+          ],
+          "description": "Sync token from a previous list request to get only changed entries; showDeleted, showHidden, and pageToken are ignored if provided. Also ignores minAccessRole. An HTTP 410 Gone response means the token has expired; perform a full resync by omitting sync_token.",
+          "human_parameter_name": "Sync Token",
+          "human_parameter_description": "Provide a sync token from a previous run to fetch only calendars that changed since then. Use this for faster incremental updates."
+        },
+        "max_results": {
+          "type": "integer",
+          "title": "Max Results",
+          "default": 100,
+          "maximum": 250,
+          "minimum": 1,
+          "examples": [
+            25,
+            100
+          ],
+          "description": "Maximum calendars to return on one page. Google defaults to 100 and allows at most 250. Follow next_page_token until absent to enumerate every accessible calendar.",
+          "human_parameter_name": "Max Results",
+          "human_parameter_description": "How many calendars to show in one batch. Increase this to see more at once (up to 250)."
+        },
+        "show_hidden": {
+          "type": "boolean",
+          "title": "Show Hidden",
+          "default": false,
+          "examples": [
+            true,
+            false
+          ],
+          "description": "Include calendars not typically shown in the UI.",
+          "human_parameter_name": "Show Hidden",
+          "human_parameter_description": "Include calendars that are hidden in your calendar view. Enable this if you\u2019re looking for calendars you\u2019ve hidden."
+        },
+        "show_deleted": {
+          "type": "boolean",
+          "title": "Show Deleted",
+          "default": false,
+          "examples": [
+            true,
+            false
+          ],
+          "description": "Include deleted calendars in the result.",
+          "human_parameter_name": "Show Deleted",
+          "human_parameter_description": "Turn this on to include calendars you\u2019ve deleted in the results. Most people can leave this off."
+        },
+        "min_access_role": {
+          "enum": [
+            "freeBusyReader",
+            "reader",
+            "writerWithoutPrivateAccess",
+            "writer",
+            "owner"
+          ],
+          "type": "string",
+          "title": "Min Access Role",
+          "examples": [
+            "reader",
+            "owner"
+          ],
+          "description": "Minimum access role for returned calendars: 'freeBusyReader', 'reader', 'writerWithoutPrivateAccess', 'writer', or 'owner'. freeBusyReader calendars expose only free/busy slots. Omit this filter to include every accessible role.",
+          "human_parameter_name": "Min Access Role",
+          "human_parameter_description": "Only include calendars where you have at least this level of access. For example, choose 'owner' to see just calendars you own."
+        }
+      }
+    }
+  },
+  "GOOGLECALENDAR_EVENTS_LIST": {
+    "version": "20261010_00",
+    "input_parameters": {
+      "type": "object",
+      "title": "EventsListRequest",
+      "properties": {
+        "query": {
+          "type": "string",
+          "title": "Query",
+          "description": "Free text search terms to find events that match these terms in various fields. Optional.",
+          "human_parameter_name": "Search Terms",
+          "human_parameter_description": "Keywords to search your events by, such as titles, locations, or notes."
+        },
+        "fields": {
+          "type": "string",
+          "title": "Fields",
+          "description": "Google partial-response selector that limits which fields are returned. Use comma-separated fields and nested selectors, for example 'items(id,status,summary,start,end,updated),nextPageToken,nextSyncToken'. Include nextPageToken when paginating and nextSyncToken when synchronizing, and keep the same selector on every page and incremental-sync request.",
+          "human_parameter_name": "Fields",
+          "human_parameter_description": "Select only the event and continuation fields you need to reduce the response size."
+        },
+        "iCalUID": {
+          "type": "string",
+          "title": "I Cal Uid",
+          "description": "Specifies an event ID in the iCalendar format to be provided in the response. Optional. Use this if you want to search for an event by its iCalendar ID.",
+          "human_parameter_name": "iCal UID",
+          "human_parameter_description": "The iCalendar UID of a specific event you want to fetch. Use this when you already know the event\u2019s UID."
+        },
+        "orderBy": {
+          "enum": [
+            "startTime",
+            "updated"
+          ],
+          "type": "string",
+          "title": "Order By",
+          "description": "The order of the events returned in the result. Optional. The default is an unspecified, stable order. Acceptable values are: \"startTime\", \"updated\". When set to \"startTime\", singleEvents must be true. The action automatically sets singleEvents=true when orderBy='startTime'.",
+          "human_parameter_name": "Order By",
+          "human_parameter_description": "Choose how to sort the results, such as by start time or by last updated time."
+        },
+        "timeMax": {
+          "type": "string",
+          "title": "Time Max",
+          "description": "Upper bound (exclusive) for an event's start time to filter by. Optional. If unset, no start-time upper bound is applied. Must be an RFC3339 timestamp with mandatory time zone offset (e.g., 2011-06-03T10:00:00-07:00 or 2011-06-03T10:00:00Z). Milliseconds may be provided but are ignored. If timeMin is set, timeMax must be greater than timeMin. TIMEZONE WARNING: If using UTC times (ending in 'Z') but the calendar is in a different timezone, the time window may not align with local calendar dates. For example, '2026-01-19T00:00:00Z' to '2026-01-20T00:00:00Z' covers 2026-01-18 4pm to 2026-01-19 4pm in America/Los_Angeles (UTC-8). To query a specific local date, use timestamps with the appropriate local timezone offset (e.g., '2026-01-19T00:00:00-08:00' for PST). NOTE: Natural language expressions like 'today', 'tomorrow', 'next week' are NOT supported.",
+          "human_parameter_name": "Time Max",
+          "human_parameter_description": "Only include events that start before this date and time. Set this to cap your results at an end point."
+        },
+        "timeMin": {
+          "type": "string",
+          "title": "Time Min",
+          "description": "Lower bound (exclusive) for an event's end time to filter by. Optional. If unset, no end-time lower bound is applied. Must be an RFC3339 timestamp with mandatory time zone offset (e.g., 2011-06-03T10:00:00-07:00 or 2011-06-03T10:00:00Z). Milliseconds may be provided but are ignored. If timeMax is set, timeMin must be smaller than timeMax. TIMEZONE WARNING: If using UTC times (ending in 'Z') but the calendar is in a different timezone, the time window may not align with local calendar dates. For example, '2026-01-19T00:00:00Z' to '2026-01-20T00:00:00Z' covers 2026-01-18 4pm to 2026-01-19 4pm in America/Los_Angeles (UTC-8). To query a specific local date, use timestamps with the appropriate local timezone offset (e.g., '2026-01-19T00:00:00-08:00' for PST). NOTE: Natural language expressions like 'today', 'tomorrow', 'next week' are NOT supported.",
+          "human_parameter_name": "Time Min",
+          "human_parameter_description": "Only include events that end after this date and time. Use this to focus on upcoming or recent events."
+        },
+        "timeZone": {
+          "type": "string",
+          "title": "Time Zone",
+          "description": "Time zone used in the response for formatting event times. Optional. Use an IANA time zone identifier (e.g., America/Los_Angeles). Defaults to the user's primary time zone. Offsets (e.g., '-03:00', 'UTC+0') and abbreviations (e.g., 'IST', 'PST') are invalid. NOTE: This parameter only affects how event times are displayed in the response. It does NOT change how timeMin/timeMax filtering is interpreted. To query a specific local date, use timestamps with the appropriate timezone offset directly in timeMin/timeMax (e.g., '2026-01-19T00:00:00-08:00').",
+          "human_parameter_name": "Time Zone",
+          "human_parameter_description": "Pick the time zone to display event times in. Leave blank to use your default time zone."
+        },
+        "pageToken": {
+          "type": "string",
+          "title": "Page Token",
+          "description": "Opaque pagination token from a previous response's nextPageToken field. Must be the exact string returned by the API - do not use placeholder values like 'NEXT', 'next', '1', '2', etc. Omit this parameter for the first page. Keep the calendar, filters, fields selector, and syncToken unchanged while paging. Continue until nextPageToken is absent; nextSyncToken is returned only on the final page.",
+          "human_parameter_name": "Page Token",
+          "human_parameter_description": "If you're browsing through pages, paste the next page token from a previous response to continue."
+        },
+        "syncToken": {
+          "type": "string",
+          "title": "Sync Token",
+          "description": "Token from nextSyncToken to return only entries changed since the last list. Cannot be combined with iCalUID, orderBy, privateExtendedProperty, q, sharedExtendedProperty, timeMin, timeMax, or updatedMin. Deletions since the previous list are always included; showDeleted cannot be false in this mode. Keep all other parameters identical to the initial full sync and retain this token while following pageToken values. The action automatically removes conflicting parameters when syncToken is provided. If Google returns HTTP 410, discard the token and perform a new full sync without syncToken.",
+          "human_parameter_name": "Sync Token",
+          "human_parameter_description": "Use the sync token from a previous list to fetch only changes since then. Ideal for incremental syncing."
+        },
+        "calendarId": {
+          "type": "string",
+          "title": "Calendar Id",
+          "default": "primary",
+          "examples": [
+            "primary"
+          ],
+          "description": "Calendar identifier. Use \"primary\" for the user's main calendar, or a calendar ID from the user's accessible calendar list. Arbitrary email addresses will NOT work - the calendar must exist in the user's calendar list. Use GOOGLECALENDAR_LIST_CALENDARS to retrieve valid calendar IDs. Defaults to \"primary\". Empty strings will be treated as \"primary\". Do NOT use Composio internal IDs like connectedAccountId (which start with \"ca_\") - these will be automatically replaced with \"primary\".",
+          "human_parameter_name": "Calendar ID",
+          "human_parameter_description": "The calendar you want to get events from. Use 'primary' for your main calendar or paste a specific calendar ID."
+        },
+        "eventTypes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "birthday",
+              "default",
+              "focusTime",
+              "fromGmail",
+              "outOfOffice",
+              "workingLocation"
+            ],
+            "type": "string"
+          },
+          "title": "Event Types",
+          "description": "Event types to return. Google accepts this query parameter more than once, so provide a list to include multiple types. A single string is also accepted for compatibility. If unset, returns all event types. Values: \"birthday\", \"default\", \"focusTime\", \"fromGmail\", \"outOfOffice\", \"workingLocation\".",
+          "human_parameter_name": "Event Types",
+          "human_parameter_description": "Choose which kind of event to include (e.g., default, birthday, outOfOffice). Leave blank to include all types."
+        },
+        "maxResults": {
+          "type": "integer",
+          "title": "Max Results",
+          "maximum": 2500,
+          "minimum": 1,
+          "description": "Maximum number of events returned on one result page. The number of events in the resulting page may be less than this value, or none at all, even if there are more events matching the query. Incomplete pages can be detected by a non-empty nextPageToken field in the response. By default the value is 250 events. The page size can never be larger than 2500 events. Optional. Must be >= 1 if provided.",
+          "human_parameter_name": "Max Results",
+          "human_parameter_description": "How many events to return per page. Use this to control the page size of your results."
+        },
+        "updatedMin": {
+          "type": "string",
+          "title": "Updated Min",
+          "description": "Lower bound for an event's last modification time (RFC3339). When specified, entries deleted since this time are always included regardless of showDeleted. Optional.",
+          "human_parameter_name": "Updated Min",
+          "human_parameter_description": "Only include events that were last updated after this date and time. Helpful for checking recent changes."
+        },
+        "showDeleted": {
+          "type": "boolean",
+          "title": "Show Deleted",
+          "description": "Include cancelled events (status=\"cancelled\"). Optional; default is false. This surfaces cancelled (soft-deleted) events, not items in the Trash. When syncToken or updatedMin is used, deletions since those markers are included regardless of showDeleted. Recurring interaction: if singleEvents=false and showDeleted=false, cancelled instances of a recurring series may still be included; if showDeleted=true and singleEvents=true, only single deleted instances (not parent series) are returned.",
+          "human_parameter_name": "Include Cancelled",
+          "human_parameter_description": "Include events that were canceled so you can see what was removed alongside active events."
+        },
+        "maxAttendees": {
+          "type": "integer",
+          "title": "Max Attendees",
+          "minimum": 1,
+          "description": "The maximum number of attendees to include in the response. If there are more than the specified number of attendees, only the participant is returned. Optional. Must be >= 1 if provided.",
+          "human_parameter_name": "Max Attendees",
+          "human_parameter_description": "Limit how many attendee details are returned per event. Helpful to keep responses smaller for large meetings."
+        },
+        "singleEvents": {
+          "type": "boolean",
+          "title": "Single Events",
+          "description": "Whether to expand recurring events into instances and only return single one-off events and instances of recurring events. Optional. The default is False.",
+          "human_parameter_name": "Single Events",
+          "human_parameter_description": "Return individual event instances instead of recurring series summaries. Useful for a simple date-ordered list."
+        },
+        "alwaysIncludeEmail": {
+          "type": "boolean",
+          "title": "Always Include Email",
+          "description": "Deprecated and ignored.",
+          "human_parameter_name": "Always Include Email",
+          "human_parameter_description": "This setting is deprecated and not used anymore. You can leave it empty."
+        },
+        "showHiddenInvitations": {
+          "type": "boolean",
+          "title": "Show Hidden Invitations",
+          "description": "Whether to include hidden invitations in the result. Optional. The default is False. Hidden invitations are events where your attendee entry has responseStatus='needsAction' and attendees[].self==true. When true, such invitations are included.",
+          "human_parameter_name": "Show Hidden Invitations",
+          "human_parameter_description": "Include invitations you haven\u2019t responded to yet that are normally hidden."
+        },
+        "sharedExtendedProperty": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ],
+          "title": "Shared Extended Property",
+          "description": "Extended properties constraint specified as propertyName=value. Matches only shared properties. This parameter might be repeated multiple times to return events that match all given constraints.",
+          "human_parameter_name": "Shared Extended Property",
+          "human_parameter_description": "Filter for events with a specific shared extended property (format: name=value). Use this for shared custom metadata."
+        },
+        "privateExtendedProperty": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ],
+          "title": "Private Extended Property",
+          "description": "Extended properties constraint specified as propertyName=value. Matches only private properties. This parameter might be repeated multiple times to return events that match all given constraints.",
+          "human_parameter_name": "Private Extended Property",
+          "human_parameter_description": "Filter for events with a specific private extended property (format: name=value). Use this if you add custom private tags to events."
+        }
+      }
+    }
+  },
+  "GOOGLECALENDAR_EVENTS_GET": {
+    "version": "20261010_00",
+    "input_parameters": {
+      "type": "object",
+      "title": "EventsGetRequest",
+      "required": [
+        "event_id"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "title": "Event Id",
+          "examples": [
+            "0a9160c4c367855d09a84f8d4350bda2"
+          ],
+          "description": "REQUIRED. The unique identifier of the specific event to retrieve. You must already know this ID (e.g., from a previous EVENTS_LIST call or event creation response). This action fetches ONE event by ID - it cannot list or search events. To find events by time range or search criteria, use GOOGLECALENDAR_EVENTS_LIST instead."
+        },
+        "time_zone": {
+          "type": "string",
+          "title": "Time Zone",
+          "examples": [
+            "America/New_York",
+            "Europe/London",
+            "Asia/Tokyo"
+          ],
+          "description": "Time zone used in the response. If not specified, the calendar's time zone is used."
+        },
+        "calendar_id": {
+          "type": "string",
+          "title": "Calendar Id",
+          "default": "primary",
+          "examples": [
+            "primary",
+            "user@example.com",
+            "c_classroomb9676db5@group.calendar.google.com"
+          ],
+          "description": "Identifier of the Google Calendar (e.g., email address, specific ID, or 'primary' for the authenticated user's main calendar) from which to retrieve the event."
+        },
+        "max_attendees": {
+          "type": "integer",
+          "title": "Max Attendees",
+          "minimum": 1,
+          "description": "Maximum number of attendees to include in the response. If there are more than the specified number, only the participant is returned."
+        }
+      }
+    }
+  },
+  "GOOGLECALENDAR_CREATE_EVENT": {
+    "version": "20261010_00",
+    "input_parameters": {
+      "type": "object",
+      "title": "CreateEventRequest",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "title": "Summary",
+          "description": "Summary (title) of the event."
+        },
+        "end_date": {
+          "type": "string",
+          "title": "End Date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "Exclusive end date for an all-day event in YYYY-MM-DD format. Must be provided together with start_date and be later than start_date."
+        },
+        "location": {
+          "type": "string",
+          "title": "Location",
+          "description": "Geographic location of the event as free-form text."
+        },
+        "timezone": {
+          "type": "string",
+          "title": "Timezone",
+          "description": "IANA timezone name from the timezone database (e.g., 'America/New_York', 'Europe/London', 'Asia/Jerusalem', 'UTC'). Required if datetime is naive. For recurring events, start and end must include a timeZone. If not provided, UTC is used. If datetime includes timezone info (Z or offset), this field is optional and defaults to UTC. IMPORTANT: Must be a valid IANA timezone identifier. Values like 'EST', 'PST', 'ISRAEL TIME', or other abbreviations are NOT valid IANA timezone names."
+        },
+        "attendees": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "additionalProperties": true
+              }
+            ]
+          },
+          "title": "Attendees",
+          "description": "List of attendees. Each attendee can be either: (1) A string email address (e.g., 'user@example.com'), or (2) An object with 'email' (required), 'optional' (boolean, default false), 'displayName' (string), 'comment' (string), 'additionalGuests' (integer), and 'resource' (boolean). To mark an attendee as optional (not required), use object format: {'email': 'user@example.com', 'optional': true}. IMPORTANT: Only valid email addresses are accepted. Plain names cannot be used."
+        },
+        "eventType": {
+          "enum": [
+            "birthday",
+            "default",
+            "focusTime",
+            "outOfOffice",
+            "workingLocation"
+          ],
+          "type": "string",
+          "title": "Event Type",
+          "default": "default",
+          "description": "Type of the event, immutable post-creation. 'workingLocation' (REQUIRES Google Workspace Enterprise). Note: 'fromGmail' events cannot be created via API.",
+          "human_parameter_name": "Event Type"
+        },
+        "recurrence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Recurrence",
+          "description": "List of RRULE, EXRULE, RDATE, EXDATE lines for recurring events. Supported frequencies: DAILY, WEEKLY, MONTHLY, YEARLY. For recurring events, start.timeZone and end.timeZone must be present. UNTIL values follow RFC 5545: date-only (YYYYMMDD) for all-day events, or UTC datetime with Z suffix (YYYYMMDDTHHMMSSZ) for timed events. UNTIL values with time but missing Z suffix are auto-corrected. Provide an empty list to remove recurrence so the event becomes non-recurring."
+        },
+        "start_date": {
+          "type": "string",
+          "title": "Start Date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "Inclusive start date for an all-day event in YYYY-MM-DD format. Must be provided together with end_date and without start_datetime or end_datetime."
+        },
+        "visibility": {
+          "enum": [
+            "default",
+            "public",
+            "private",
+            "confidential"
+          ],
+          "type": "string",
+          "title": "Visibility",
+          "default": "default",
+          "description": "Event visibility: 'default', 'public', 'private', or 'confidential'."
+        },
+        "calendar_id": {
+          "type": "string",
+          "title": "Calendar Id",
+          "default": "primary",
+          "examples": [
+            "primary",
+            "abcdefghijklmnopqrstuvwxyz@group.calendar.google.com"
+          ],
+          "description": "Calendar identifier. Use 'primary' (recommended) for the user's main calendar. Alternatively, use a calendar ID from the user's accessible calendar list. Calendar IDs look like email addresses (e.g., 'xyz@group.calendar.google.com' for shared calendars). Important: Arbitrary email addresses will NOT work - the calendar must exist in the user's calendar list with appropriate access permissions. Use GOOGLECALENDAR_LIST_CALENDARS to retrieve valid calendar IDs.",
+          "human_parameter_name": "Calendar ID",
+          "human_parameter_description": "The calendar where you want to create the event. Use 'primary' (recommended) for your main calendar. For other calendars, use a calendar ID from your accessible calendar list - not an arbitrary email address."
+        },
+        "description": {
+          "type": "string",
+          "title": "Description",
+          "description": "Description of the event. Can contain HTML. Optional. Must be omitted for 'birthday' event type."
+        },
+        "end_datetime": {
+          "type": "string",
+          "title": "End Datetime",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(:\\d{2})?(\\.\\d+)?(Z|[+-]\\d{1,2}(:?\\d{2})?)?$",
+          "description": "Event end time in ISO 8601 format: YYYY-MM-DDTHH:MM:SS. When provided, this parameter takes precedence over event_duration_hour and event_duration_minutes. If not provided, the end time is calculated using start_datetime + duration. Must be after start_datetime. Explicit timezone information (Z or an offset) is preserved; offset-less values are interpreted in `timezone`, or UTC when it is omitted."
+        },
+        "send_updates": {
+          "enum": [
+            "all",
+            "externalOnly",
+            "none"
+          ],
+          "type": "string",
+          "title": "SendUpdates",
+          "description": "Options for who should receive notifications about event changes.",
+          "human_parameter_name": "Send updates?"
+        },
+        "transparency": {
+          "enum": [
+            "opaque",
+            "transparent"
+          ],
+          "type": "string",
+          "title": "Transparency",
+          "default": "opaque",
+          "description": "'opaque' (busy) or 'transparent' (available)."
+        },
+        "start_datetime": {
+          "type": "string",
+          "title": "Start Datetime",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(:\\d{2})?(\\.\\d+)?(Z|[+-]\\d{1,2}(:?\\d{2})?)?$",
+          "description": "Event start time in ISO 8601 format: YYYY-MM-DDTHH:MM:SS. Required for timed events; omit it when using start_date and end_date for an all-day event."
+        },
+        "guestsCanModify": {
+          "type": "boolean",
+          "title": "Guests Can Modify",
+          "description": "If True, guests can modify the event."
+        },
+        "exclude_organizer": {
+          "type": "boolean",
+          "title": "Exclude Organizer",
+          "default": false,
+          "description": "If True, the organizer will NOT be added as an attendee. Default is False (organizer is included).",
+          "human_parameter_name": "Exclude Organizer",
+          "human_parameter_description": "Choose whether to include yourself (the organizer) as an attendee. Turn this on if you don't want to appear as a guest or receive attendee notifications."
+        },
+        "birthdayProperties": {
+          "type": "object",
+          "title": "BirthdayProperties",
+          "properties": {
+            "type": {
+              "enum": [
+                "birthday",
+                "anniversary",
+                "other"
+              ],
+              "type": "string",
+              "title": "Type",
+              "default": "birthday",
+              "description": "Type of birthday event: 'birthday', 'anniversary', or 'other'. Defaults to 'birthday'.",
+              "human_parameter_name": "Birthday Type"
+            },
+            "contact": {
+              "type": "string",
+              "title": "Contact",
+              "description": "Contact ID in format 'people/c12345' from Google People API. REQUIRED when type is 'anniversary' or 'other'. MUST BE OMITTED when type is 'birthday' (the API forbids contact field for type='birthday').",
+              "human_parameter_name": "Contact"
+            },
+            "customTypeName": {
+              "type": "string",
+              "title": "Custom Type Name",
+              "description": "Custom type name when type is 'other'. Requires valid contact field.",
+              "human_parameter_name": "Custom Type Name"
+            }
+          },
+          "description": "Properties for birthday events.",
+          "additionalProperties": false,
+          "human_parameter_name": "Birthday Properties"
+        },
+        "create_meeting_room": {
+          "type": "boolean",
+          "title": "Create Meeting Room",
+          "default": true,
+          "description": "Defaults to True. When True, for CREATE operations creates a Google Meet link; for UPDATE operations preserves existing conference data if present, or adds a new Meet link if none exists. Google Workspace accounts will successfully receive a Meet link. Personal Gmail accounts and other unsupported accounts will gracefully fallback to creating an event without a Meet link when conference creation fails. Set to False to skip Meet link operations (won't create new or modify existing conference data). The fallback ensures event creation succeeds even when conference features are unavailable due to account limitations.",
+          "human_parameter_name": "Create Meeting Room?"
+        },
+        "event_duration_hour": {
+          "type": "integer",
+          "title": "Event Duration Hour",
+          "default": 0,
+          "minimum": 0,
+          "description": "Number of hours for the event duration. Supports multi-day events (e.g., 240 hours = 10 days). For durations under 1 hour, use event_duration_minutes instead. Ignored if end_datetime is provided."
+        },
+        "extended_properties": {
+          "type": "object",
+          "title": "Extended Properties",
+          "description": "Extended properties of the event for storing custom metadata. Contains 'private' (visible only on this calendar) and/or 'shared' (visible to all attendees) dictionaries mapping string keys to string values. Example: {'private': {'key1': 'value1'}, 'shared': {'key2': 'value2'}}",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "human_parameter_name": "Extended Properties"
+        },
+        "focusTimeProperties": {
+          "type": "object",
+          "title": "FocusTimeProperties",
+          "properties": {
+            "chatStatus": {
+              "enum": [
+                "active",
+                "doNotDisturb"
+              ],
+              "type": "string",
+              "title": "ChatStatus",
+              "description": "Chat status during focus time: 'active' or 'doNotDisturb'.",
+              "human_parameter_name": "Chat Status"
+            },
+            "declineMessage": {
+              "type": "string",
+              "title": "Decline Message",
+              "description": "Message to include in declined meeting invitations. Only used when autoDeclineMode is set.",
+              "human_parameter_name": "Decline Message"
+            },
+            "autoDeclineMode": {
+              "enum": [
+                "declineNone",
+                "declineAllConflictingInvitations",
+                "declineOnlyNewConflictingInvitations"
+              ],
+              "type": "string",
+              "title": "AutoDeclineMode",
+              "description": "Auto decline mode: 'declineNone' (no invitations declined), 'declineAllConflictingInvitations' (all conflicting invitations declined), or 'declineOnlyNewConflictingInvitations' (only new conflicting invitations declined).",
+              "human_parameter_name": "Auto Decline Mode"
+            }
+          },
+          "description": "Properties for focusTime events. REQUIRES Google Workspace Enterprise account with Focus Time feature enabled.",
+          "additionalProperties": false,
+          "human_parameter_name": "Focus Time Properties"
+        },
+        "guestsCanInviteOthers": {
+          "type": "boolean",
+          "title": "Guests Can Invite Others",
+          "description": "Whether attendees other than the organizer can invite others to the event.",
+          "human_parameter_name": "Can guests invite others?"
+        },
+        "outOfOfficeProperties": {
+          "type": "object",
+          "title": "OutOfOfficeProperties",
+          "properties": {
+            "declineMessage": {
+              "type": "string",
+              "title": "Decline Message",
+              "description": "Message to include in declined meeting invitations. Only used when autoDeclineMode is set.",
+              "human_parameter_name": "Decline Message"
+            },
+            "autoDeclineMode": {
+              "enum": [
+                "declineNone",
+                "declineAllConflictingInvitations",
+                "declineOnlyNewConflictingInvitations"
+              ],
+              "type": "string",
+              "title": "AutoDeclineMode",
+              "description": "Auto decline mode: 'declineNone' (no invitations declined), 'declineAllConflictingInvitations' (all conflicting invitations declined), or 'declineOnlyNewConflictingInvitations' (only new conflicting invitations declined). RECURRING EVENT RESTRICTION: For recurring out-of-office events, ONLY 'declineOnlyNewConflictingInvitations' is allowed. Cannot use 'declineAllConflictingInvitations' for recurring OOO (Google Calendar prevents retroactively declining existing meetings). REQUIRES Google Workspace (paid business subscription, e.g., Business Starter at $6/user/month). Personal Gmail accounts cannot use this feature.",
+              "human_parameter_name": "Auto Decline Mode"
+            }
+          },
+          "description": "Properties for outOfOffice events.",
+          "additionalProperties": false,
+          "human_parameter_name": "Out of Office Properties"
+        },
+        "event_duration_minutes": {
+          "type": "integer",
+          "title": "Event Duration Minutes",
+          "default": 30,
+          "maximum": 59,
+          "minimum": 0,
+          "description": "Duration in minutes (0-59 ONLY). NEVER use 60+ minutes - use event_duration_hour=1 instead. Maximum value is 59. Combined duration (hours + minutes) must be greater than 0. Ignored if end_datetime is provided."
+        },
+        "guestsCanSeeOtherGuests": {
+          "type": "boolean",
+          "title": "Guests Can See Other Guests",
+          "description": "Whether attendees other than the organizer can see who the event's attendees are.",
+          "human_parameter_name": "Can guests see others?"
+        },
+        "workingLocationProperties": {
+          "type": "object",
+          "title": "WorkingLocationProperties",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "homeOffice",
+                "officeLocation",
+                "customLocation"
+              ],
+              "type": "string",
+              "title": "Type",
+              "description": "Type of working location ('homeOffice' | 'officeLocation' | 'customLocation')."
+            },
+            "homeOffice": {
+              "type": "object",
+              "title": "WorkingLocationHomeOffice",
+              "properties": {},
+              "description": "Empty object marker for home office working location.\n\nThis is used to indicate the user is working from home.\nGoogle Calendar API accepts an empty object for this field.",
+              "additionalProperties": false
+            },
+            "customLocation": {
+              "type": "object",
+              "title": "WorkingLocationCustom",
+              "required": [
+                "label"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "title": "Label",
+                  "description": "Label for a custom working location (e.g., 'Client site')."
+                }
+              },
+              "description": "Custom working location with a display label.",
+              "additionalProperties": false
+            },
+            "officeLocation": {
+              "type": "object",
+              "title": "WorkingLocationOffice",
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "title": "Label",
+                  "description": "Office name displayed in Calendar clients (e.g., building name)."
+                },
+                "deskId": {
+                  "type": "string",
+                  "title": "Desk Id",
+                  "description": "Optional desk identifier."
+                },
+                "floorId": {
+                  "type": "string",
+                  "title": "Floor Id",
+                  "description": "Optional floor identifier."
+                },
+                "buildingId": {
+                  "type": "string",
+                  "title": "Building Id",
+                  "description": "Optional building identifier from org Resources."
+                },
+                "floorSectionId": {
+                  "type": "string",
+                  "title": "Floor Section Id",
+                  "description": "Optional floor section identifier."
+                }
+              },
+              "description": "Office-based working location details.",
+              "additionalProperties": false
+            }
+          },
+          "description": "Properties for workingLocation events. REQUIRES Google Workspace Enterprise.\n\nConstraints discovered from testing:\n- Must set transparency='transparent' and visibility='public'\n- Description must be omitted\n- Depending on 'type', include one of 'homeOffice', 'officeLocation', or 'customLocation'",
+          "additionalProperties": false,
+          "human_parameter_name": "Working Location"
+        }
+      }
+    }
+  },
+  "GMAIL_FETCH_EMAILS": {
+    "version": "20261015_00",
+    "input_parameters": {
+      "type": "object",
+      "title": "FetchEmailsRequest",
+      "properties": {
+        "query": {
+          "type": "string",
+          "title": "Query",
+          "examples": [
+            "from:john@example.com is:unread",
+            "subject:meeting has:attachment",
+            "after:2024/01/01 before:2024/02/01",
+            "is:snoozed",
+            "is:important OR is:starred",
+            "label:work -label:spam"
+          ],
+          "description": "Gmail advanced search query (e.g., 'from:user subject:meeting'). Supported operators: 'from:', 'to:', 'subject:', 'label:', 'has:', 'is:', 'in:', 'category:', 'after:YYYY/MM/DD', 'before:YYYY/MM/DD', AND/OR/NOT. IMPORTANT - 'is:' vs 'label:' usage: Use 'is:' for special mail states: is:snoozed, is:unread, is:read, is:starred, is:important. Use 'label:' ONLY for user-created labels (e.g., 'label:work', 'label:projects'). Note: 'muted' may work with both 'is:muted' and 'label:muted' based on community reports. Common mistake: 'label:snoozed' is WRONG - use 'is:snoozed' instead. Use quotes for exact phrases. Omit for no query filter. after:/before: evaluate whole calendar days in UTC; before: is exclusive \u2014 adjust for local timezone to avoid off-by-one-day gaps.",
+          "human_parameter_name": "Search query",
+          "human_parameter_description": "Input a search term to filter your emails. Use 'is:' for special states (is:snoozed, is:unread, is:read, is:starred, is:important). Use 'label:' only for user-created labels (exception: 'muted' may work with both)."
+        },
+        "user_id": {
+          "type": "string",
+          "title": "User Id",
+          "default": "me",
+          "examples": [
+            "me",
+            "user@example.com"
+          ],
+          "description": "User's email address or 'me' for the authenticated user. Non-'me' addresses require domain-level delegation; without it, authentication or not-found errors result.",
+          "human_parameter_name": "User ID",
+          "human_parameter_description": "Provide the email address of the user whose mailbox you want to access. You can use 'me' to refer to your own mailbox."
+        },
+        "verbose": {
+          "type": "boolean",
+          "title": "Verbose",
+          "default": true,
+          "examples": [
+            true,
+            false
+          ],
+          "description": "If false, uses optimized concurrent metadata fetching for faster performance (~75% improvement). If true, uses standard detailed message fetching. When false, only essential fields (subject, sender, recipient, time, labels) are guaranteed. Body content and attachment details require verbose=true even when include_payload=true.",
+          "human_parameter_name": "Verbose mode?",
+          "human_parameter_description": "Select this to get detailed information for each email or to speed up the process and get just the basics."
+        },
+        "ids_only": {
+          "type": "boolean",
+          "title": "Ids Only",
+          "default": false,
+          "examples": [
+            true,
+            false
+          ],
+          "description": "If true, only returns message IDs from the list API without fetching individual message details. Fastest option for getting just message IDs and thread IDs.",
+          "human_parameter_name": "IDs only?",
+          "human_parameter_description": "Use this option if you just want the IDs of emails without loading their full details, making the request quicker."
+        },
+        "label_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Label Ids",
+          "examples": [
+            "INBOX",
+            "UNREAD",
+            "Label_123456"
+          ],
+          "description": "Filter by label IDs; only messages with all specified labels are returned (AND logic). Optional - omit or use empty list to fetch all messages without label filtering. System label IDs: 'INBOX', 'SPAM', 'TRASH', 'UNREAD', 'STARRED', 'IMPORTANT', 'CATEGORY_PRIMARY' (alias 'CATEGORY_PERSONAL'), 'CATEGORY_SOCIAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS'. For custom/user-created labels, you MUST use the label ID (e.g., 'Label_123456'), NOT the display name. Use the 'listLabels' action to find label IDs for custom labels. Combining label_ids with label: in query applies AND logic across both, which can silently over-restrict results; use one strategy consistently.",
+          "human_parameter_name": "Label IDs",
+          "human_parameter_description": "List the label IDs to filter which messages to fetch. System labels (INBOX, SPAM, etc.) can be used directly by name. For custom labels, you must use the listLabels action first to get the label ID - do not use the label name you see in Gmail."
+        },
+        "page_token": {
+          "type": "string",
+          "title": "Page Token",
+          "description": "Token for retrieving a specific page, obtained from a previous response's `nextPageToken`. Must be a valid opaque token string from a previous API response. Do not pass arbitrary values. Omit for the first page. Loop calls using nextPageToken until it is absent to avoid silently missing messages. resultSizeEstimate is approximate \u2014 do not use as a stopping condition.",
+          "human_parameter_name": "Page token",
+          "human_parameter_description": "If you've paginated results, use this token to get the next set of messages. Leave blank for the first page."
+        },
+        "max_results": {
+          "type": "integer",
+          "title": "Max Results",
+          "default": 1,
+          "maximum": 500,
+          "minimum": 1,
+          "examples": [
+            "10",
+            "100",
+            "500"
+          ],
+          "description": "Maximum number of messages to retrieve per page. Default of 1 retrieves only a single message; set higher for practical use. Hard cap is 500 per page.",
+          "human_parameter_name": "Maximum results",
+          "human_parameter_description": "Specify how many email messages you want to retrieve in one request, from 1 to 500."
+        },
+        "include_payload": {
+          "type": "boolean",
+          "title": "Include Payload",
+          "default": true,
+          "examples": [
+            true,
+            false
+          ],
+          "description": "Set to true to include full message payload (headers, body, attachments); false for metadata only. payload may still be null even when true; use GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID for guaranteed complete content. When payload is present, bodies are base64url-encoded in payload.parts; replace '-'\u2192'+' and '_'\u2192'/' and fix padding before decoding, and check both text/plain and text/html parts.",
+          "human_parameter_name": "Include full payload?",
+          "human_parameter_description": "Choose whether to get the full content of each email, including attachments and body, or just the essential metadata."
+        },
+        "include_spam_trash": {
+          "type": "boolean",
+          "title": "Include Spam Trash",
+          "default": false,
+          "examples": [
+            true,
+            false
+          ],
+          "description": "Set to true to include messages from 'SPAM' and 'TRASH'.",
+          "human_parameter_name": "Include spam and trash?",
+          "human_parameter_description": "Decide if you want to see emails that are normally filtered into your SPAM or TRASH folders."
+        }
+      }
+    }
+  },
+  "GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID": {
+    "version": "20261015_00",
+    "input_parameters": {
+      "type": "object",
+      "title": "FetchMessageByMessageIdRequest",
+      "required": [
+        "message_id"
+      ],
+      "properties": {
+        "format": {
+          "type": "string",
+          "title": "Format",
+          "default": "full",
+          "examples": [
+            "metadata",
+            "minimal",
+            "full",
+            "raw"
+          ],
+          "description": "Format for message content. 'minimal': lightest (ID, thread ID, labels only). 'metadata': headers and message metadata without body content - ideal for summarization, analysis, or when you only need subject/sender/timestamp (recommended for most use cases). 'full': complete MIME structure with 50+ headers, nested parts, and base64url-encoded body data - heavy payload, only use when you need the complete raw MIME structure for parsing attachments or body content. 'raw': entire RFC 2822 formatted message as base64url string.",
+          "human_parameter_name": "Format",
+          "human_parameter_description": "Choose the response format: 'metadata' for summarization/analysis (recommended), 'minimal' for just IDs/labels, 'full' only when you need complete MIME structure."
+        },
+        "user_id": {
+          "type": "string",
+          "title": "User Id",
+          "default": "me",
+          "examples": [
+            "user@example.com",
+            "me"
+          ],
+          "description": "User's email address or 'me' for the authenticated user.",
+          "human_parameter_name": "User ID",
+          "human_parameter_description": "The email address or identifier of the user whose mailbox you want to access. Use 'me' to access your own mailbox."
+        },
+        "message_id": {
+          "type": "string",
+          "title": "Message Id",
+          "examples": [
+            "19b11732c1b578fd",
+            "18c5e5b5f5d5e5b5",
+            "1736ccf5d7b4d452"
+          ],
+          "minLength": 1,
+          "description": "The Gmail API message ID (hexadecimal string, typically 15-16 characters like '19b11732c1b578fd'). Must be obtained from Gmail API responses (e.g., List Messages, Search Messages). Do NOT use email subjects, dates, sender names, or custom identifiers. Do NOT use `threadId` (use GMAIL_FETCH_MESSAGE_BY_THREAD_ID for threads), the Message-ID email header, or any fabricated value \u2014 only IDs from Gmail API list/search responses.",
+          "human_parameter_name": "Message ID",
+          "human_parameter_description": "The unique identifier of the email message you want to fetch. You'll use this ID to tell the system which specific email to retrieve."
+        }
+      }
+    }
+  },
+  "GMAIL_CREATE_EMAIL_DRAFT": {
+    "version": "20261015_00",
+    "input_parameters": {
+      "type": "object",
+      "title": "CreateEmailDraftRequest",
+      "properties": {
+        "cc": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Cc",
+          "default": [],
+          "examples": [
+            [
+              "cc.recipient1@example.com",
+              "CC User <cc.recipient2@example.com>"
+            ]
+          ],
+          "description": "Carbon Copy (CC) recipients' email addresses. Each must be a valid email address (e.g., 'user@example.com') or display name format (e.g., 'John Doe <user@example.com>'). Plain names without email addresses are NOT valid. Optional for drafts (recipients can be added later before sending)."
+        },
+        "bcc": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Bcc",
+          "default": [],
+          "examples": [
+            [
+              "bcc.recipient@example.com",
+              "BCC User <bcc.user@example.com>"
+            ]
+          ],
+          "description": "Blind Carbon Copy (BCC) recipients' email addresses. Each must be a valid email address (e.g., 'user@example.com') or display name format (e.g., 'Bob Jones <user@example.com>'). Plain names without email addresses are NOT valid. Optional for drafts (recipients can be added later before sending)."
+        },
+        "body": {
+          "type": "string",
+          "title": "Body",
+          "examples": [
+            "Hello Team,\n\nPlease find the attached report for your review.\n\nBest regards,\nYour Name",
+            "<h1>Meeting Confirmation</h1><p>This email confirms our meeting scheduled for next Tuesday.</p>"
+          ],
+          "description": "Email body content (plain text or HTML); `is_html` must be True if HTML. Optional - drafts can be created without a body and edited later before sending. Can also be provided as 'message_body'.",
+          "human_parameter_name": "Email Body",
+          "human_parameter_description": "Write the main content of your email here. This can be plain text or HTML, depending on your preference."
+        },
+        "is_html": {
+          "type": "boolean",
+          "title": "Is Html",
+          "default": false,
+          "examples": [
+            true,
+            false
+          ],
+          "description": "Set to True if `body` is already formatted HTML. When False, plain text newlines are auto-converted to <br/> tags. Both modes result in HTML email; this flag controls whether the body content is treated as raw HTML or plain text that gets HTML formatting applied.",
+          "human_parameter_name": "Is HTML?",
+          "human_parameter_description": "Set to True if your email body is already HTML. When False, plain text formatting (newlines, tabs) will be automatically converted to HTML for proper display."
+        },
+        "subject": {
+          "type": "string",
+          "title": "Subject",
+          "examples": [
+            "Project Update Q3",
+            "Meeting Reminder"
+          ],
+          "description": "Email subject line. Optional - drafts can be created without a subject and edited later before sending. When creating a draft reply to an existing thread (thread_id provided), leave this empty to stay in the same thread. Setting a subject will create a NEW thread instead.",
+          "human_parameter_name": "Subject",
+          "human_parameter_description": "Enter the subject of your email. This helps the recipient understand what the email is about."
+        },
+        "user_id": {
+          "type": "string",
+          "title": "User Id",
+          "default": "me",
+          "examples": [
+            "me",
+            "user@example.com"
+          ],
+          "description": "User's email address or 'me' for the authenticated user.",
+          "human_parameter_name": "User ID",
+          "human_parameter_description": "Provide the user ID or the email address of the user. Use 'me' to refer to the currently authenticated user."
+        },
+        "thread_id": {
+          "type": "string",
+          "title": "Thread Id",
+          "examples": [
+            "17f45ec49a9c3f1b"
+          ],
+          "description": "ID of an existing Gmail thread to reply to; omit for new thread. If the thread ID is invalid or inaccessible, the draft will be created as a new thread instead of failing.",
+          "human_parameter_name": "Thread ID",
+          "human_parameter_description": "If you want to reply to an ongoing conversation, provide the thread ID here. Leave it blank for a new message."
+        },
+        "attachment": {
+          "anyOf": [
+            {
+              "type": "object",
+              "title": "FileUploadable",
+              "required": [
+                "name",
+                "mimetype",
+                "s3key"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "title": "Name",
+                  "examples": [
+                    "document.pdf",
+                    "image.jpg",
+                    "report.docx"
+                  ],
+                  "description": "The filename that will be used when uploading the file to the destination service"
+                },
+                "s3key": {
+                  "type": "string",
+                  "title": "S3Key",
+                  "examples": [
+                    "47563/gmail/GET_ATTACHMENT/response/12345"
+                  ],
+                  "description": "The S3 key of a publicly accessible file, typically returned from a previous download action that stored the file in S3. This key references an existing file that can be uploaded to another service."
+                },
+                "mimetype": {
+                  "type": "string",
+                  "title": "Mimetype",
+                  "examples": [
+                    "application/pdf",
+                    "image/jpeg",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  ],
+                  "description": "The MIME type of the file"
+                }
+              },
+              "file_uploadable": true
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "title": "FileUploadable",
+                "required": [
+                  "name",
+                  "mimetype",
+                  "s3key"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "title": "Name",
+                    "examples": [
+                      "document.pdf",
+                      "image.jpg",
+                      "report.docx"
+                    ],
+                    "description": "The filename that will be used when uploading the file to the destination service"
+                  },
+                  "s3key": {
+                    "type": "string",
+                    "title": "S3Key",
+                    "examples": [
+                      "47563/gmail/GET_ATTACHMENT/response/12345"
+                    ],
+                    "description": "The S3 key of a publicly accessible file, typically returned from a previous download action that stored the file in S3. This key references an existing file that can be uploaded to another service."
+                  },
+                  "mimetype": {
+                    "type": "string",
+                    "title": "Mimetype",
+                    "examples": [
+                      "application/pdf",
+                      "image/jpeg",
+                      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    ],
+                    "description": "The MIME type of the file"
+                  }
+                },
+                "file_uploadable": true
+              }
+            }
+          ],
+          "title": "Attachment",
+          "description": "File(s) to attach to the email. Accepts a single file or a list of files. Total message size including base64-encoded attachments must be under 25 MB; use shareable links (e.g., Google Drive) for larger files.",
+          "human_parameter_name": "Attachment(s)",
+          "human_parameter_description": "Upload file(s) you want to include with the email. Can be a single file or multiple files."
+        },
+        "recipient_email": {
+          "type": "string",
+          "title": "Recipient Email",
+          "examples": [
+            "john.doe@example.com",
+            "John Doe <john.doe@example.com>"
+          ],
+          "description": "Primary recipient's email address. Must be a valid email address (e.g., 'user@example.com') or display name format (e.g., 'John Doe <user@example.com>'). A plain name without an email address (e.g., 'John Doe') is NOT valid - the '@' symbol and domain are required. Optional for drafts (recipients can be added later before sending). Use extra_recipients if you want to send to multiple recipients."
+        },
+        "extra_recipients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "title": "Extra Recipients",
+          "default": [],
+          "examples": [
+            [
+              "jane.doe@example.com",
+              "Jane Doe <jane.doe@example.com>"
+            ]
+          ],
+          "description": "Additional 'To' recipients' email addresses (not Cc or Bcc). Each must be a valid email address (e.g., 'user@example.com'), display name format (e.g., 'Jane Doe <user@example.com>'), or 'me' for the authenticated user. Plain names without email addresses are NOT valid. Should only be used if recipient_email is also provided."
+        }
+      }
+    }
+  },
+  "GMAIL_GET_DRAFT": {
+    "version": "20261015_00",
+    "input_parameters": {
+      "type": "object",
+      "title": "GetDraftRequest",
+      "required": [
+        "draft_id"
+      ],
+      "properties": {
+        "format": {
+          "type": "string",
+          "title": "Format",
+          "default": "full",
+          "examples": [
+            "full",
+            "metadata",
+            "minimal",
+            "raw"
+          ],
+          "description": "Format for the draft message: 'minimal' (ID/labels only), 'full' (complete data with parsed payload), 'raw' (base64url-encoded RFC 2822 format), 'metadata' (ID/labels/headers only)."
+        },
+        "user_id": {
+          "type": "string",
+          "title": "User Id",
+          "default": "me",
+          "examples": [
+            "me",
+            "user@example.com"
+          ],
+          "description": "The user's email address. The special value `me` can be used to indicate the authenticated user."
+        },
+        "draft_id": {
+          "type": "string",
+          "title": "Draft Id",
+          "examples": [
+            "r99885592323229922",
+            "r-8388446164079304564"
+          ],
+          "description": "The ID of the draft to retrieve. Draft IDs are typically alphanumeric strings (e.g., 'r99885592323229922'). Use GMAIL_LIST_DRAFTS to retrieve valid draft IDs."
+        }
+      }
+    }
+  },
+  "GMAIL_LIST_DRAFTS": {
+    "version": "20261015_00",
+    "input_parameters": {
+      "type": "object",
+      "title": "ListDraftsRequest",
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "title": "User Id",
+          "default": "me",
+          "examples": [
+            "me",
+            "user@example.com"
+          ],
+          "description": "User's mailbox ID; use 'me' for the authenticated user.",
+          "human_parameter_name": "User ID",
+          "human_parameter_description": "The email address or identifier of the user whose mailbox you want to access. Use 'me' to access your own mailbox."
+        },
+        "verbose": {
+          "type": "boolean",
+          "title": "Verbose",
+          "default": false,
+          "examples": [
+            true,
+            false
+          ],
+          "description": "If true, fetches full draft details including subject, sender, recipient, body, and timestamp. If false, returns only draft IDs (faster). Increases response payload size; tune max_results accordingly. Use verbose=true before destructive operations to confirm draft identity by subject, recipient, and timestamp.",
+          "human_parameter_name": "Verbose",
+          "human_parameter_description": "Decide if you want detailed information about each draft or just the basic IDs. More details can help you see what\u2019s inside."
+        },
+        "page_token": {
+          "type": "string",
+          "title": "Page Token",
+          "default": "",
+          "examples": [
+            "CiaKJDhWSE5UURE9PSIsImMiOiJhYmMxMjMifQ=="
+          ],
+          "description": "Token from a previous response to retrieve a specific page of drafts. Ordering is non-guaranteed; continue paginating until page_token is absent in the response to retrieve all drafts.",
+          "human_parameter_name": "Page Token",
+          "human_parameter_description": "Use this token to get the next page of draft results if you have more drafts to display."
+        },
+        "max_results": {
+          "type": "integer",
+          "title": "Max Results",
+          "default": 1,
+          "maximum": 500,
+          "minimum": 1,
+          "examples": [
+            10,
+            100,
+            500
+          ],
+          "description": "Maximum number of drafts to return per page.",
+          "human_parameter_name": "Max Results",
+          "human_parameter_description": "Specify how many drafts you want to retrieve in one request. Choose between 1 and 500."
+        }
+      }
+    }
+  },
+  "SLACK_LIST_ALL_CHANNELS": {
+    "version": "20261015_00",
+    "input_parameters": {
+      "type": "object",
+      "title": "ListAllChannelsRequest",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "title": "Limit",
+          "default": 1,
+          "examples": [
+            100,
+            500,
+            1000
+          ],
+          "description": "Maximum number of channels to return per page (1 to 1000). Fewer channels may be returned than requested. This schema defaults to 1 if omitted.",
+          "human_parameter_name": "Results Limit",
+          "human_parameter_description": "How many channels to return at once, up to 1000. Use a smaller number for faster responses."
+        },
+        "types": {
+          "type": "string",
+          "title": "Types",
+          "examples": [
+            "public_channel,private_channel",
+            "im,mpim"
+          ],
+          "description": "Comma-separated list of conversation types to include: `public_channel` (regular #channels everyone can join), `private_channel` (invite-only channels), `im` (1-on-1 direct messages), `mpim` (group direct messages with 3+ people). Defaults to `public_channel` if omitted. Private channels, IMs, and MPIMs only appear if the authenticated user/bot is a member and the token has the required scopes; absence from results reflects access limits, not non-existence.",
+          "human_parameter_name": "Conversation Types",
+          "human_parameter_description": "Filter by conversation type: public_channel (#channels), private_channel (invite-only), im (1-on-1 DMs), or mpim (group DMs). Separate multiple types with commas."
+        },
+        "cursor": {
+          "type": "string",
+          "title": "Cursor",
+          "examples": [
+            "dXNlcjpVMDYxTkZUVDI=",
+            "bmV4dF90czoxNTEyMDg1ODYxMDAwNTQ5"
+          ],
+          "description": "Pagination cursor (from a previous response's `next_cursor`) for the next page of results. Omit for the first page. Loop on `response_metadata.next_cursor` until it is empty to retrieve all channels; stopping early silently omits results.",
+          "human_parameter_name": "Pagination Cursor",
+          "human_parameter_description": "Use the cursor from a previous response to fetch the next page of channels. Leave empty for the first page."
+        },
+        "team_id": {
+          "type": "string",
+          "title": "Team Id",
+          "examples": [
+            "T1234567890"
+          ],
+          "description": "ID of the Slack workspace (team) to operate on, e.g. T0123456789. Use only with org-level Enterprise Grid tokens when you need to target a specific workspace; omit for single-workspace tokens.",
+          "human_parameter_name": "Team ID",
+          "human_parameter_description": "The ID of the workspace to list channels from. Required when using an org-level token, ignored for workspace-level tokens."
+        },
+        "exclude_archived": {
+          "type": "boolean",
+          "title": "Exclude Archived",
+          "examples": [
+            true,
+            false
+          ],
+          "description": "Excludes archived channels if true. The API defaults to false (archived channels are included).",
+          "human_parameter_name": "Exclude Archived Channels",
+          "human_parameter_description": "Set to true to hide archived channels from the results, or false to include them."
+        }
+      },
+      "description": "Request schema for listing Slack team channels with various filtering options."
+    }
+  },
+  "SLACK_FETCH_CONVERSATION_HISTORY": {
+    "version": "20261015_00",
+    "input_parameters": {
+      "type": "object",
+      "title": "FetchConversationHistoryRequest",
+      "required": [
+        "channel"
+      ],
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "title": "Limit",
+          "default": 100,
+          "maximum": 1000,
+          "minimum": 1,
+          "examples": [
+            "100",
+            "200"
+          ],
+          "description": "Maximum number of messages to request in this single Slack API call (1-1000). Defaults to 100. Slack may return fewer than requested, especially for non-Marketplace apps where Slack can cap each page at 15 messages. This action does not internally paginate; use response_metadata.next_cursor in the cursor parameter of a follow-up call to fetch more messages.",
+          "human_parameter_name": "Message Limit",
+          "human_parameter_description": "Set how many messages to request in this page, up to 1000. Use the returned next cursor in another call to continue."
+        },
+        "cursor": {
+          "type": "string",
+          "title": "Cursor",
+          "examples": [
+            "dXNlcjpVMDYxTkZUVDA="
+          ],
+          "description": "Pagination cursor from `response_metadata.next_cursor` of a previous response. Omit this for the first page; pass the returned cursor in a follow-up call to fetch the next page.",
+          "human_parameter_name": "Pagination Cursor",
+          "human_parameter_description": "Use the cursor from a previous response to continue retrieving messages from where you left off."
+        },
+        "latest": {
+          "type": "string",
+          "title": "Latest",
+          "examples": [
+            "1609459200.000000"
+          ],
+          "description": "End of the time range of messages to include in results. Accepts a Unix timestamp or a Slack timestamp (e.g., '1234567890.000000'). NOTE: This filter only applies to main channel messages, not threaded replies. Use SLACK_FETCH_MESSAGE_THREAD_FROM_A_CONVERSATION to retrieve replies.",
+          "human_parameter_name": "Latest Timestamp",
+          "human_parameter_description": "Provide the latest timestamp of messages you want to include, to filter results up to this point. Only filters main channel messages, not threaded replies."
+        },
+        "oldest": {
+          "type": "string",
+          "title": "Oldest",
+          "examples": [
+            "1609372800.000000"
+          ],
+          "description": "Start of the time range of messages to include in results. Accepts a Unix timestamp or a Slack timestamp (e.g., '1234567890.000000'). NOTE: This filter only applies to main channel messages, not threaded replies. Use SLACK_FETCH_MESSAGE_THREAD_FROM_A_CONVERSATION to retrieve replies.",
+          "human_parameter_name": "Oldest Timestamp",
+          "human_parameter_description": "Specify the oldest timestamp to filter results from this starting point. Only filters main channel messages, not threaded replies."
+        },
+        "channel": {
+          "type": "string",
+          "title": "Channel",
+          "examples": [
+            "C1234567890",
+            "G0123456789",
+            "D0123456789"
+          ],
+          "description": "The ID of the public channel, private channel, direct message, or multi-person direct message to fetch history from.",
+          "human_parameter_name": "Channel ID",
+          "human_parameter_description": "Specify the channel ID or type (public, private, direct message) to fetch its conversation history."
+        },
+        "inclusive": {
+          "type": "boolean",
+          "title": "Inclusive",
+          "examples": [
+            true,
+            false
+          ],
+          "description": "When true, includes messages at the exact 'oldest' or 'latest' boundary timestamps in results. When false (default), excludes boundary messages. Only applies when 'oldest' or 'latest' is specified.",
+          "human_parameter_name": "Include Boundary Messages",
+          "human_parameter_description": "Set to true to include messages at the exact start/end timestamps, or false to exclude them."
+        },
+        "include_all_metadata": {
+          "type": "boolean",
+          "title": "Include All Metadata",
+          "examples": [
+            true
+          ],
+          "description": "Return all metadata associated with messages in the conversation history. When true, includes additional metadata fields that may be present on messages.",
+          "human_parameter_name": "Include All Metadata",
+          "human_parameter_description": "Set to true to return all metadata associated with messages."
+        }
+      },
+      "description": "Request schema for fetching conversation history from Slack."
+    }
+  },
+  "SLACK_FETCH_MESSAGE_THREAD_FROM_A_CONVERSATION": {
+    "version": "20261015_00",
+    "input_parameters": {
+      "type": "object",
+      "title": "FetchMessageThreadFromAConversationRequest",
+      "required": [
+        "channel",
+        "ts"
+      ],
+      "properties": {
+        "ts": {
+          "type": "string",
+          "title": "Ts",
+          "examples": [
+            "1234567890.123456"
+          ],
+          "description": "Timestamp of the parent message in the thread. Must be an existing message. If no replies, only the parent message itself is returned. Must be the exact full timestamp string of the root/parent message \u2014 not a reply's ts, a truncated value, a permalink, or an integer; these silently return wrong results.",
+          "human_parameter_name": "Message Timestamp",
+          "human_parameter_description": "The timestamp of the parent message whose replies you want to fetch. Use the ts value from that specific message."
+        },
+        "limit": {
+          "type": "integer",
+          "title": "Limit",
+          "examples": [
+            100
+          ],
+          "description": "Maximum number of messages to return. Fewer may be returned even if more are available.",
+          "human_parameter_name": "Limit",
+          "human_parameter_description": "The maximum number of messages to return at once. Smaller numbers can make results quicker and easier to scan."
+        },
+        "cursor": {
+          "type": "string",
+          "title": "Cursor",
+          "examples": [
+            "dXNlcjpVMEc5V0ZYTlo="
+          ],
+          "description": "Pagination cursor from `response_metadata.next_cursor` of a previous response to get subsequent pages. If omitted, fetches the first page.",
+          "human_parameter_name": "Pagination Cursor",
+          "human_parameter_description": "If you're continuing from a previous result set, paste the next page cursor here to keep loading more replies."
+        },
+        "latest": {
+          "type": "string",
+          "title": "Latest",
+          "examples": [
+            "1678886400.000000"
+          ],
+          "description": "Latest message timestamp in the time range to include results.",
+          "human_parameter_name": "Latest Timestamp",
+          "human_parameter_description": "The newest message time to include in your results. Leave blank to include the most recent replies."
+        },
+        "oldest": {
+          "type": "string",
+          "title": "Oldest",
+          "examples": [
+            "1678836000.000000"
+          ],
+          "description": "Oldest message timestamp in the time range to include results. Must be a UTC-based Slack ts string; incorrect timezone conversion or rounding can produce empty result windows.",
+          "human_parameter_name": "Oldest Timestamp",
+          "human_parameter_description": "The earliest message time to include in your results. Use this to limit how far back the replies go."
+        },
+        "channel": {
+          "type": "string",
+          "title": "Channel",
+          "examples": [
+            "C0123456789"
+          ],
+          "description": "ID of the conversation (channel, direct message, etc.) to fetch the thread from. Must be a channel ID, not a channel name. Token must have membership in private channels or DMs, otherwise returns empty results or `not_in_channel`/`channel_not_found`.",
+          "human_parameter_name": "Channel ID",
+          "human_parameter_description": "The conversation (channel or direct message) that contains the thread you want to view. Provide the ID of that conversation."
+        },
+        "inclusive": {
+          "type": "boolean",
+          "title": "Inclusive",
+          "examples": [
+            true
+          ],
+          "description": "Whether to include messages with `latest` or `oldest` timestamps in results. Effective only if `latest` or `oldest` is specified.",
+          "human_parameter_name": "Inclusive",
+          "human_parameter_description": "Choose whether to include messages that occur exactly at the oldest/latest times you set."
+        },
+        "include_all_metadata": {
+          "type": "boolean",
+          "title": "Include All Metadata",
+          "examples": [
+            true
+          ],
+          "description": "Return all metadata associated with messages in the thread. When true, includes additional metadata fields that may be present on messages.",
+          "human_parameter_name": "Include All Metadata",
+          "human_parameter_description": "Set to true to return all metadata associated with messages in the thread."
+        }
+      },
+      "description": "Request schema for `FetchMessageThreadFromAConversation`"
+    }
+  },
+  "SLACK_RETRIEVE_MESSAGE_PERMALINK_URL": {
+    "version": "20261015_00",
+    "input_parameters": {
+      "type": "object",
+      "title": "RetrieveMessagePermalinkUrlRequest",
+      "required": [
+        "channel",
+        "message_ts"
+      ],
+      "properties": {
+        "channel": {
+          "type": "string",
+          "title": "Channel",
+          "examples": [
+            "C012AB3CD",
+            "G123456"
+          ],
+          "description": "The ID of the conversation or channel containing the message. This can be a public channel ID, a private channel ID, a direct message channel ID, or a multi-person direct message channel ID. Must be a channel ID, not a channel name; use SLACK_FIND_CHANNELS to resolve names to IDs.",
+          "human_parameter_name": "Channel ID",
+          "human_parameter_description": "The Slack channel or conversation where the message was posted. Provide the channel ID (for example C012AB3CD) so we know where to find the message."
+        },
+        "message_ts": {
+          "type": "string",
+          "title": "Message Ts",
+          "examples": [
+            "1610144875.000600",
+            "15712345.001500"
+          ],
+          "description": "A message's `ts` value (timestamp), uniquely identifying it within a channel. Example: '1610144875.000600'.",
+          "human_parameter_name": "Message Timestamp",
+          "human_parameter_description": "The unique timestamp of the message you want a link to. You can copy it from the message's Copy link option or from a previous message list or search."
+        }
+      },
+      "description": "Request schema for `RetrieveMessagePermalinkUrl`"
+    }
+  },
+  "SLACK_TEST_AUTH": {
+    "version": "20261015_00",
+    "input_parameters": {
+      "type": "object",
+      "title": "SlackTestAuthRequest",
+      "properties": {},
+      "description": "Request schema for SlackTestAuth. No parameters required - authentication is via Bearer token in headers."
+    }
+  },
+  "SLACK_SEARCH_MESSAGES": {
+    "version": "20261015_00",
+    "input_parameters": {
+      "type": "object",
+      "title": "SearchMessagesRequest",
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "page": {
+          "type": "integer",
+          "title": "Page",
+          "examples": [
+            1,
+            2,
+            3
+          ],
+          "description": "Page number for manual pagination control. Cannot be used with auto_paginate - choose either automatic collection OR manual page control, not both.",
+          "human_parameter_name": "Page Number",
+          "human_parameter_description": "If you're paging manually, select which page of results to view. Don't use this when Auto Paginate is turned on."
+        },
+        "sort": {
+          "type": "string",
+          "title": "Sort",
+          "examples": [
+            "score",
+            "timestamp"
+          ],
+          "description": "Sort results by `score` (relevance) or `timestamp` (chronological).",
+          "human_parameter_name": "Sort",
+          "human_parameter_description": "Choose how to order the results: best match (score) or time (timestamp)."
+        },
+        "count": {
+          "type": "integer",
+          "title": "Count",
+          "default": 1,
+          "examples": [
+            20,
+            50,
+            100,
+            500,
+            1000
+          ],
+          "description": "Without auto_paginate: Number of messages per page (max 100). With auto_paginate: Total messages desired. Set count=500 to get 500 messages with automatic pagination handling.",
+          "human_parameter_name": "Count",
+          "human_parameter_description": "Enter how many messages you want. If Auto Paginate is on, this is the total to gather; otherwise, it's the number per page (up to 100)."
+        },
+        "query": {
+          "type": "string",
+          "title": "Query",
+          "examples": [
+            "on:2025-09-25",
+            "after:2025-01-01 before:2025-12-31",
+            "during:september",
+            "during:2025-09-25",
+            "product launch in:#marketing",
+            "bug report from:@jane has:file",
+            "\"meeting notes\" on:2024-07-20",
+            "urgent -resolved in:#support",
+            "\"project update\" on:2025-09-25 from:@john in:#team-updates",
+            "has:link during:august from:@bot",
+            "deployment after:2025-09-20 in:#engineering"
+          ],
+          "description": "Search query supporting various modifiers for precise filtering:\n\n        **Location Modifiers:**\n        - `in:#channel-name` - Messages in specific channel\n        - `in:@username` - Direct messages with user\n\n        **User Modifiers:**\n        - `from:@username` - Messages from specific user\n        - `from:botname` - Messages from bot\n\n        **Content Modifiers:**\n        - `has:link` - Messages with links\n        - `has:file` - Messages with files\n        - `has::star:` - Starred messages\n        - `has::pin:` - Pinned messages\n\n        **Special Characters:**\n        - `\"exact phrase\"` - Search exact phrase\n        - `*wildcard` - Wildcard matching\n        - `-exclude` - Exclude words\n\n        **Combinations:** Mix modifiers with date filters like `\"project update\" on:2025-09-25 in:#marketing from:@john`",
+          "human_parameter_name": "Search Query",
+          "human_parameter_description": "What you're searching for. You can use words, phrases in quotes, and filters like in:#channel, from:@user, before:YYYY-MM-DD to narrow results."
+        },
+        "cursor": {
+          "type": "string",
+          "title": "Cursor",
+          "examples": [
+            "*",
+            "dXNlcjpVMEc5V0ZYTlo="
+          ],
+          "description": "Cursor for cursor-mark pagination. Use `*` for the first call, then use `next_cursor` from the previous response for subsequent calls. This is the modern pagination approach recommended by Slack. Cannot be used with `page` parameter - choose either cursor-based or page-based pagination.",
+          "human_parameter_name": "Cursor",
+          "human_parameter_description": "Use cursor-based pagination (recommended by Slack). Set to '*' for the first call, then use the next_cursor value from previous responses to get more results."
+        },
+        "team_id": {
+          "type": "string",
+          "title": "Team Id",
+          "examples": [
+            "T1234567890"
+          ],
+          "description": "ID of the Slack workspace (team) to operate on, e.g. T0123456789. Use only with org-level Enterprise Grid tokens when you need to target a specific workspace; omit for single-workspace tokens.",
+          "human_parameter_name": "Team ID",
+          "human_parameter_description": "Specify the workspace ID to search in. Only needed when using an org-level token."
+        },
+        "sort_dir": {
+          "type": "string",
+          "title": "Sort Dir",
+          "examples": [
+            "asc",
+            "desc"
+          ],
+          "description": "Sort direction: `asc` (ascending) or `desc` (descending).",
+          "human_parameter_name": "Sort Direction",
+          "human_parameter_description": "Pick the sort direction: newest first (desc) or oldest first (asc)."
+        },
+        "highlight": {
+          "type": "boolean",
+          "title": "Highlight",
+          "examples": [
+            true,
+            false
+          ],
+          "description": "Enable highlighting of search terms in results.",
+          "human_parameter_name": "Highlight",
+          "human_parameter_description": "Choose whether to show your search terms highlighted in the results so they are easier to spot."
+        },
+        "auto_paginate": {
+          "type": "boolean",
+          "title": "Auto Paginate",
+          "default": false,
+          "examples": [
+            true,
+            false
+          ],
+          "description": "When enabled, 'count' becomes the total messages desired instead of per-page limit. System automatically handles pagination to collect the specified total. Cannot be used with 'page' parameter - choose either automatic collection or manual page control. Usage: If you fetched 100 messages but pagination shows 500 total available, set auto_paginate=true and count=500 to get all results at once.",
+          "human_parameter_name": "Auto Paginate",
+          "human_parameter_description": "Automatically collect additional pages until you've gathered the number of messages set in Count. Use this when you want a complete set without picking pages yourself."
+        }
+      },
+      "description": "Request schema for `SearchMessages`"
+    }
+  }
+}
