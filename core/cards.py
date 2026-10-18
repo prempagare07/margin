@@ -111,23 +111,34 @@ def connect_form() -> ChatMessage:
     return card_message("form", payload, "Let's set up your Margin account.")
 
 
-def link_buttons(links: dict[str, str]) -> ChatMessage:
+def link_buttons(links: dict[str, str], connected: set[str] | None = None) -> ChatMessage:
     """Custom card with one primary button per app + an 'I've connected' button.
 
     links = {"Gmail": "https://...", "Google Calendar": "https://...", ...}
+    connected = set of app names already connected (shown dimmed with checkmark)
     """
-    buttons: list[dict] = []
+    connected = connected or set()
+    children: list[dict] = [
+        {"type": "text", "value": "Connect each service so Margin can read your schedule.", "style": "muted"},
+    ]
     for app, url in links.items():
-        buttons.append({
-            "type": "button",
-            "label": f"Connect {app}",
-            "primary": True,
-            "action": {
-                "selection": {"action": "linked", "app": app},
-                "redirect": url,
-            },
-        })
-    buttons.append({
+        if app in connected:
+            children.append({
+                "type": "text",
+                "value": f"✓ {app} connected",
+                "style": "muted",
+            })
+        else:
+            children.append({
+                "type": "button",
+                "label": f"Connect {app}",
+                "primary": True,
+                "action": {
+                    "selection": {"action": "linked", "app": app},
+                    "redirect": url,
+                },
+            })
+    children.append({
         "type": "button",
         "label": "I've connected everything",
         "action": {"selection": {"action": "check_links"}},
@@ -136,10 +147,7 @@ def link_buttons(links: dict[str, str]) -> ChatMessage:
         "root": {
             "type": "section",
             "title": "Connect your apps",
-            "children": [
-                {"type": "text", "value": "Connect each service so Margin can read your schedule.", "style": "muted"},
-                *buttons,
-            ],
+            "children": children,
         }
     }
     return card_message("custom", payload, "Connect your apps to get started.")

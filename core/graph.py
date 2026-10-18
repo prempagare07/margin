@@ -1,6 +1,7 @@
 """LangGraph orchestration. handle() is the single entry point. Owner: Prem."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -716,25 +717,53 @@ async def connect_node(state: GraphState) -> dict:
 async def check_links_node(state: GraphState) -> dict:
     from integrations import composio_tools
 
-    labels = {"gmail": "Gmail", "gcal": "Google Calendar", "slack": "Slack"}
-    lines: list[str] = []
+    _prov_label = {"gmail": "Gmail", "gcal": "Google Calendar", "slack": "Slack"}
+    connected: set[str] = set()
+    needs_connect: list[str] = []
+
+    # Also check Canvas (DB-only, no Composio)
+    try:
+        from db import repo
+        canvas_row = await repo.get_connection(state["user_id"], "canvas")
+        if canvas_row and canvas_row.get("status") == "active":
+            connected.add("Canvas")
+        else:
+            needs_connect.append("Canvas")
+    except Exception as exc:
+        logger.warning("check_links: canvas db error: %s", exc)
+        needs_connect.append("Canvas")
+
     for provider in ("gmail", "gcal", "slack"):
+        label = _prov_label[provider]
         try:
             status = await composio_tools.connection_status(state["user_id"], provider)
+            logger.info("check_links: provider=%s status=%s", provider, status.status)
             if status.status == "active":
                 if provider == "gcal" and not status.settings.get("calendar_ids"):
                     await composio_tools.auto_select_calendars(state["user_id"])
-                value = "connected"
+                connected.add(label)
             elif status.status == "relink_required":
-                value = "needs re-linking"
+                needs_connect.append(label)
             else:
-                value = "not connected"
+                needs_connect.append(label)
         except Exception as exc:
             code = getattr(exc, "code", "STATUS_UNAVAILABLE")
-            logger.warning("check_links: provider=%s code=%s", provider, code)
-            value = "needs re-linking" if code in {"RELINK_REQUIRED", "ACCOUNT_CHANGED"} else "not connected"
-        lines.append(f"{labels[provider]}: {value}")
-    await send_text(state["ctx"], state["sender"], "\n".join(lines))
+            logger.warning("check_links: provider=%s code=%s exc=%s", provider, code, exc)
+            needs_connect.append(label)
+
+    if connected:
+        names = ", ".join(sorted(connected))
+        await send_text(state["ctx"], state["sender"], f"Connected: {names} ✓")
+
+    if not needs_connect:
+        await send_text(state["ctx"], state["sender"],
+            "All apps connected! Say 'plan my week' to get started.")
+        return {}
+
+    # Show updated card with connected apps dimmed
+    await asyncio.sleep(0.4)
+    await _send_app_links_card(state["ctx"], state["sender"], state["user_id"],
+                               connected_apps=connected)
     return {}
 
 
@@ -748,33 +777,57 @@ _APP_DESCRIPTIONS = {
 }
 
 
-async def _send_app_links_card(ctx, sender: str, user_id: str) -> None:
-    """Show link_buttons card with all app OAuth links at once."""
+async def _send_app_links_card(ctx, sender: str, user_id: str,
+                               connected_apps: set[str] | None = None) -> None:
+    """Show link_buttons card with all app OAuth links at once.
+
+    connected_apps: if provided, use this set; otherwise check status live.
+    """
     from core.cards import link_buttons
+    from integrations.composio_tools import connect_link, connection_status
     base = os.environ.get("PUBLIC_BASE_URL", "https://inappmargin.vip")
-    links: dict[str, str] = {}
 
-    try:
-        from web.connect_state import make_connect_url
-        links["Canvas"] = make_connect_url(user_id)
-    except Exception as exc:
-        logger.warning("app_links: canvas url failed: %s", exc)
-        links["Canvas"] = f"{base}/connect/canvas"
-
-    for app_name, provider, label in [
-        ("gmail", "gmail", "Gmail"),
-        ("googlecalendar", "googlecalendar", "Google Calendar"),
-        ("slack", "slack", "Slack"),
-    ]:
+    # Check which apps are already connected if not provided
+    if connected_apps is None:
+        connected_apps = set()
         try:
-            from integrations.composio_tools import connect_link
-            links[label] = await connect_link(user_id, app_name)
-        except Exception as exc:
-            logger.warning("app_links: composio link failed app=%s: %s", app_name, exc)
+            from db import repo
+            row = await repo.get_connection(user_id, "canvas")
+            if row and row.get("status") == "active":
+                connected_apps.add("Canvas")
+        except Exception:
+            pass
+        for provider, label in [("gmail", "Gmail"), ("gcal", "Google Calendar"), ("slack", "Slack")]:
+            try:
+                st = await connection_status(user_id, provider)
+                if st.status == "active":
+                    connected_apps.add(label)
+            except Exception:
+                pass
 
-    logger.info("app_links: sending link_buttons with %d apps to %s", len(links), sender[:20])
+    # Build links only for unconnected apps
+    links: dict[str, str] = {}
+    _composio_provider = {"Gmail": "gmail", "Google Calendar": "gcal", "Slack": "slack"}
+
+    if "Canvas" not in connected_apps:
+        try:
+            from web.connect_state import make_connect_url
+            links["Canvas"] = make_connect_url(user_id)
+        except Exception as exc:
+            logger.warning("app_links: canvas url failed: %s", exc)
+            links["Canvas"] = f"{base}/connect/canvas"
+
+    for label, provider in _composio_provider.items():
+        if label not in connected_apps:
+            try:
+                links[label] = await connect_link(user_id, provider)
+            except Exception as exc:
+                logger.warning("app_links: composio link failed app=%s: %s", label, exc)
+
+    logger.info("app_links: connected=%s unconnected=%s for %s",
+                sorted(connected_apps), sorted(links), sender[:20])
     try:
-        await ctx.send(sender, link_buttons(links))
+        await ctx.send(sender, link_buttons(links, connected=connected_apps))
     except Exception as exc:
         logger.error("app_links: ctx.send failed: %s", exc)
         text = "Connect your apps to unlock Margin:\n" + "\n".join(f"• {app}: {url}" for app, url in links.items())

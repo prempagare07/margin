@@ -128,7 +128,8 @@ async def connect_link(user_id: str, app: str) -> str:
             auth_configs={toolkit: auth}, tools={toolkit: {"enable": []}},
             session_preset=SESSION_PRESET_DIRECT_TOOLS, manage_connections=False,
             sandbox={"enable": False}, proxy_execute=False, instant=False)
-        request = session.authorize(toolkit, callback_url=base + "/connected")
+        app_label = {"gmail": "Gmail", "gcal": "Google Calendar", "slack": "Slack"}.get(app, app.title())
+        request = session.authorize(toolkit, callback_url=base + f"/connected?app={app_label.replace(' ', '+')}")
         return request.id, request.redirect_url
     account_id, url = await runtime.sdk_call(authorize, provider=app, operation="authorize", retry=False)
     try:
