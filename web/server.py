@@ -174,4 +174,4 @@ async def connected(app: str = "App") -> HTMLResponse:
     safe = app[:32].replace("&", "").replace("<", "").replace(">", "").replace('"', "").strip()
     if not safe:
         safe = "App"
-    return HTMLResponse(_CONNECTED_HTML.format(app=safe))
+    return HTMLResponse(_CONNECTED_HTML.replace("{app}", safe))
