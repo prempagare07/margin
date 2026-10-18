@@ -755,8 +755,8 @@ async def _send_app_links_card(ctx, sender: str, user_id: str) -> None:
     links: dict[str, str] = {}
 
     try:
-        from web.connect_state import make_state
-        links["Canvas"] = f"{base}/connect/canvas?state={make_state(user_id)}"
+        from web.connect_state import make_connect_url
+        links["Canvas"] = make_connect_url(user_id)
     except Exception as exc:
         logger.warning("app_links: canvas url failed: %s", exc)
         links["Canvas"] = f"{base}/connect/canvas"
@@ -796,8 +796,8 @@ async def _send_next_app_card(ctx, sender: str, user_id: str, apps: list[str]) -
 
     if app_name == "Canvas":
         try:
-            from web.connect_state import make_state
-            url = f"{base}/connect/canvas?state={make_state(user_id)}"
+            from web.connect_state import make_connect_url
+            url = make_connect_url(user_id)
         except Exception as exc:
             logger.warning("app_card: canvas url failed: %s", exc)
             url = f"{base}/connect/canvas"
