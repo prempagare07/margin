@@ -80,12 +80,14 @@ tester.include(proto, publish_manifest=True)
 @tester.on_event("startup")
 async def _run(ctx: Context) -> None:
     # Start session
+    # Wait for mailbox registration before sending — registration takes ~10-15s
+    await asyncio.sleep(15)
     await ctx.send(MARGIN, ChatMessage(
         timestamp=datetime.now(timezone.utc),
         msg_id=uuid.uuid4(),
         content=[StartSessionContent(type="start-session")],
     ))
-    await asyncio.sleep(3)
+    await asyncio.sleep(5)
 
     for i, text in enumerate(MESSAGES):
         print(f"\n  → [{i+1}/{len(MESSAGES)}] sending: {text!r}")

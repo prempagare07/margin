@@ -235,6 +235,9 @@ async def classify_node(state: GraphState) -> dict:
 
 async def gather_node(state: GraphState) -> dict:
     """Gather items + free slots from specialists (or fixtures)."""
+    if state["channel"] == "asi1":
+        from core.chat import send_text as _st
+        await _st(state["ctx"], state["sender"], "On it — gathering your week...")
     async with aspan("agent.gather", "gather items", user_id=state["user_id"]) as s:
         if _fake_specialists():
             items, slots, gather_error = _fake_items(), _fake_slots(), None

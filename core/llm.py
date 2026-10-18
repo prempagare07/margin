@@ -33,12 +33,14 @@ def _step5_client() -> AsyncOpenAI:
     return AsyncOpenAI(
         api_key=os.environ.get("STEPFUN_API_KEY", ""),
         base_url=os.environ.get("STEPFUN_BASE_URL", "https://api.stepfun.ai/v1"),
+        max_retries=0,  # we control retries in plan(); SDK retries cause 3x timeout stacking
     )
 
 def _asi1_client() -> AsyncOpenAI:
     return AsyncOpenAI(
         api_key=os.environ.get("ASI_ONE_API_KEY", ""),
         base_url="https://api.asi1.ai/v1",
+        max_retries=0,  # fast() is latency-sensitive; no SDK-level retries
     )
 
 STEP_MODEL = os.environ.get("STEP_MODEL", "step-5-preview")
@@ -105,7 +107,7 @@ async def plan(
     *,
     schema: Type[BaseModel] | None = None,
     images: list[str] | None = None,
-    timeout: float = 45,
+    timeout: float = 30,
 ) -> tuple[Any, str]:
     """Step 5 first; on any failure retry once, then fall back to ASI1.
 
@@ -148,7 +150,7 @@ async def fast(
     messages: list[dict],
     *,
     schema: Type[BaseModel] | None = None,
-    timeout: float = 15,
+    timeout: float = 10,
 ) -> Any:
     """ASI1 only — fast intent classification and card copy."""
     async with _aspan("llm.fast", ASI1_MODEL):
