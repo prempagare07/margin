@@ -13,8 +13,8 @@ from uagents import Agent, Context
 from channels.scheduler import start_scheduler, stop_scheduler
 from core import gather as gather_bus
 from core import graph
-from core.cards import connect_form
-from core.chat import make_chat_protocol, send_text
+from core.cards import connect_form, welcome_card
+from core.chat import make_chat_protocol, send_text, send_text_msg
 from shared.protocol import ActionRequest, ActionResult, GatherResult
 
 logger = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ async def _on_text(
 _proto = make_chat_protocol(
     agent_name="margin",
     on_text=_on_text,
-    greeting=connect_form(),
+    greeting=[welcome_card(), connect_form()],
 )
 
 agent.include(_proto, publish_manifest=True)

@@ -8,6 +8,8 @@ services:
     ports:
       - "8080:8080"
     command: ["uvicorn", "web.server:app", "--host", "0.0.0.0", "--port", "8080"]
+    networks:
+      - margin
 
   agents:
     build:
@@ -15,23 +17,27 @@ services:
       dockerfile: deploy/Dockerfile
     restart: unless-stopped
     env_file: ../.env
-    # Each agent opens its own port; expose the range for the agentverse inspector
     ports:
       - "8000-8004:8000-8004"
     command: ["python", "-m", "agents.bureau"]
+    networks:
+      - margin
 
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+    network_mode: host
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    depends_on:
+      - web
 
 volumes:
   caddy_data:
   caddy_config:
+
+networks:
+  margin:
+    driver: bridge

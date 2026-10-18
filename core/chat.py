@@ -29,7 +29,7 @@ OnText = Callable[[Context, str, str, dict | None], Awaitable[None]]
 def make_chat_protocol(
     agent_name: str,
     on_text: OnText,
-    greeting: str | ChatMessage,
+    greeting: str | ChatMessage | list[ChatMessage],
 ) -> Protocol:
     """Build a chat Protocol for any Margin agent.
 
@@ -52,7 +52,10 @@ def make_chat_protocol(
         )
 
         if any(isinstance(c, StartSessionContent) for c in msg.content):
-            if isinstance(greeting, ChatMessage):
+            if isinstance(greeting, list):
+                for g in greeting:
+                    await ctx.send(sender, g)
+            elif isinstance(greeting, ChatMessage):
                 await ctx.send(sender, greeting)
             else:
                 await ctx.send(sender, send_text_msg(greeting))
