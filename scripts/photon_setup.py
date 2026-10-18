@@ -31,7 +31,12 @@ def read_env(path: Path) -> dict[str, str]:
 
 def request_json(url: str, api_key: str, method: str = "GET", body=None, key=None):
     data = json.dumps(body).encode() if body is not None else None
-    headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+        # Cloudflare rejects urllib's default Python-urllib signature (1010).
+        "User-Agent": "Margin-Photon-Setup/1.0",
+    }
     if data is not None:
         headers["Content-Type"] = "application/json"
     if key:
