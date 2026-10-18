@@ -704,16 +704,17 @@ async def save_message(
     content = (content or "").strip()[:2000]
     if not content:
         return
-    # Ensure user row exists so FK holds (no-op if already there)
-    await _one(
-        "INSERT INTO public.users (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
-        (user_id,),
-    )
-    await _one(
-        """INSERT INTO public.messages (user_id, role, content, intent, channel)
-           VALUES (%s, %s, %s, %s, %s) RETURNING id""",
-        (user_id, role, content, intent, channel),
-    )
+    async with (await get_pool()).connection() as conn:
+        # Ensure user row exists so FK holds — no RETURNING, just execute
+        await conn.execute(
+            "INSERT INTO public.users (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
+            (user_id,),
+        )
+        await conn.execute(
+            """INSERT INTO public.messages (user_id, role, content, intent, channel)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (user_id, role, content, intent, channel),
+        )
 
 
 async def get_recent_messages(user_id: str, *, limit: int = 10) -> list[dict]:
