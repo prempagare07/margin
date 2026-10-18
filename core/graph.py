@@ -798,20 +798,30 @@ async def _send_app_links_card(ctx, sender: str, user_id: str,
     # Check which apps are already connected if not provided
     if connected_apps is None:
         connected_apps = set()
+        # apps with an existing pending/active connection in DB (don't overwrite)
+        _has_pending: set[str] = set()
         try:
             from db import repo
             row = await repo.get_connection(user_id, "canvas")
             if row and row.get("status") == "active":
                 connected_apps.add("Canvas")
-        except Exception:
-            pass
-        for provider, label in [("gmail", "Gmail"), ("gcal", "Google Calendar"), ("slack", "Slack")]:
+        except Exception as exc:
+            logger.warning("app_links: canvas db check failed: %s", exc)
+
+        _prov_to_label = {"gmail": "Gmail", "gcal": "Google Calendar", "slack": "Slack"}
+        for provider, label in _prov_to_label.items():
             try:
                 st = await connection_status(user_id, provider)
+                logger.info("app_links: %s status=%s", label, st.status)
                 if st.status == "active":
                     connected_apps.add(label)
-            except Exception:
-                pass
+                elif st.status in ("pending", "relink_required"):
+                    _has_pending.add(label)
+            except Exception as exc:
+                logger.warning("app_links: %s status check failed code=%s", label,
+                               getattr(exc, "code", exc))
+    else:
+        _has_pending = set()
 
     # Build links only for unconnected apps
     links: dict[str, str] = {}
@@ -826,11 +836,20 @@ async def _send_app_links_card(ctx, sender: str, user_id: str,
             links["Canvas"] = f"{base}/connect/canvas"
 
     for label, provider in _composio_provider.items():
-        if label not in connected_apps:
-            try:
-                links[label] = await connect_link(user_id, provider)
-            except Exception as exc:
-                logger.warning("app_links: composio link failed app=%s: %s", label, exc)
+        if label in connected_apps:
+            continue
+        if label in _has_pending:
+            # OAuth flow is in progress — generating a new link would overwrite
+            # pending_account_id and orphan the current flow.  Keep a placeholder
+            # so the card renders the button with a fresh link ONLY if user explicitly
+            # wants to restart. For now, skip and let check_links verify.
+            logger.info("app_links: %s has pending OAuth, skipping connect_link", label)
+            continue
+        try:
+            links[label] = await connect_link(user_id, provider)
+        except Exception as exc:
+            logger.warning("app_links: composio link failed app=%s code=%s", label,
+                           getattr(exc, "code", exc))
 
     logger.info("app_links: connected=%s unconnected=%s",
                 sorted(connected_apps), sorted(links))
@@ -888,16 +907,23 @@ async def chat_node(state: GraphState) -> dict:
     text = state["text"].lower().strip()
     logger.info("chat: intent=%s", state.get("intent"))
 
-    # App linked or skipped → confirm and re-show the full connect card
-    if state.get("intent") in ("linked", "skip_app", "check_links"):
+    # App linked → DO NOT regenerate OAuth links here (that would overwrite
+    # the pending_account_id in DB, orphaning the just-started OAuth flow).
+    # Just tell user to complete the browser tab, then hit "I've connected everything".
+    if state.get("intent") == "linked":
         sel = state.get("selection") or {}
         app = sel.get("app", "")
-        if app and state.get("intent") == "linked":
-            await send_text(ctx, sender, f"{app} connected ✓ Connect more apps below, or say 'plan my week'.")
-        elif app:
-            await send_text(ctx, sender, f"Skipped {app}. Connect more apps below, or say 'plan my week'.")
-        else:
-            await send_text(ctx, sender, "Connect your apps so Margin can read your schedule:")
+        if app:
+            await send_text(ctx, sender,
+                f"Complete the {app} authorization in the browser tab that just opened. "
+                f"Then tap \"I've connected everything\" below when done.")
+        return {}
+
+    if state.get("intent") in ("skip_app", "check_links"):
+        sel = state.get("selection") or {}
+        app = sel.get("app", "")
+        if app and state.get("intent") == "skip_app":
+            await send_text(ctx, sender, f"Skipped {app}.")
         await _send_app_links_card(ctx, sender, state["user_id"])
         return {}
 

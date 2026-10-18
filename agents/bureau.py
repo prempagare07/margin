@@ -1,10 +1,19 @@
 """Starts all five Margin agents via uagents Bureau. Owner: Prem."""
 import json
+import logging
 import os
+import sys
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stdout,
+    format="%(levelname)s %(name)s: %(message)s",
+    force=True,
+)
 
 from core.observability import init as _sentry_init
 _sentry_init()
