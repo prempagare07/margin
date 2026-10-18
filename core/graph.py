@@ -109,6 +109,8 @@ class GraphState(TypedDict):
     plan_id: str | None
     actions: list[dict]
     gather_error: str | None
+    history: list[dict]
+    user_ctx: dict
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +126,7 @@ async def classify_node(state: GraphState) -> dict:
 
     lower = (state["text"] or "").lower()
     logger.info("classify: text=%r", lower[:120])
+
     if any(k in lower for k in ("summary", "what happened", "today", "update me", "brief me", "what's new", "whats new", "catch me up", "catch up")):
         return {"intent": "summary"}
     if any(k in lower for k in ("reset", "clear account", "start over", "disconnect all", "delete account", "remove all")):
@@ -137,24 +140,31 @@ async def classify_node(state: GraphState) -> dict:
     if any(k in lower for k in ("connect", "linked", "app", "canvas", "gmail", "slack", "calendar", "integrat")):
         return {"intent": "check_links"}
 
+    # Build history context for LLM (last 2 turns)
+    history = state.get("history") or []
+    history_context = ""
+    if history:
+        turns = history[-2:]
+        history_context = "\n".join(f"{t['role'].capitalize()}: {t['content'][:100]}" for t in turns)
+
     try:
-        reply = await fast(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "Classify the student message into exactly one of: "
-                        "plan_week, open_task, budget, upgrade, snooze, summary, reset, chat. "
-                        "Reply with that one word only. "
-                        "Use plan_week for any request to plan, schedule, organize, or block time. "
-                        "Use summary for any request for a daily update, brief, or summary of what's happening. "
-                        "Use reset for any request to disconnect all apps, clear account, or start over."
-                    ),
-                },
-                {"role": "user", "content": state["text"]},
-            ],
-            timeout=8,
-        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Classify the student message into exactly one of: "
+                    "plan_week, open_task, budget, upgrade, snooze, summary, reset, chat. "
+                    "Reply with that one word only. "
+                    "Use plan_week for any request to plan, schedule, organize, or block time. "
+                    "Use summary for any request for a daily update, brief, or summary of what's happening. "
+                    "Use reset for any request to disconnect all apps, clear account, or start over. "
+                    "Use budget for any question about spending, affordability, or finances."
+                    + (f"\n\nRecent conversation:\n{history_context}" if history_context else "")
+                ),
+            },
+            {"role": "user", "content": state["text"]},
+        ]
+        reply = await fast(messages, timeout=8)
         intent = (reply or "chat").strip().lower().split()[0]
         valid = {"plan_week", "open_task", "budget", "upgrade", "snooze", "summary", "reset", "chat"}
         logger.info("classify: llm_intent=%s", intent)
@@ -745,7 +755,8 @@ async def summary_node(state: GraphState) -> dict:
                 {
                     "role": "system",
                     "content": (
-                        "You are Margin, a proactive chief-of-staff for an ASU student. "
+                        f"You are Margin, a proactive chief-of-staff for an ASU student. "
+                        f"Today is {now.strftime('%A, %B %-d')}. "
                         "Given the student's current items from Canvas, Gmail, Slack, and Calendar, "
                         "write a concise daily brief in 4-6 bullet points. "
                         "Lead with what's most urgent. Mention deadlines, pending emails needing action, "
@@ -755,7 +766,7 @@ async def summary_node(state: GraphState) -> dict:
                 },
                 {
                     "role": "user",
-                    "content": f"Today is {now.strftime('%A, %B %-d')}. Here are my current items:\n\n{prompt_items}",
+                    "content": f"Here are my current items:\n\n{prompt_items}",
                 },
             ],
             timeout=20,
@@ -767,6 +778,13 @@ async def summary_node(state: GraphState) -> dict:
         await ctx.send(sender, summary_card(reply or "\n".join(item_lines[:6]), items[:6], len(slots)))
     else:
         await send_text(ctx, sender, reply or f"Here's what's on your plate:\n\n{chr(10).join(item_lines[:6])}")
+
+    if reply:
+        try:
+            from db import repo
+            await repo.save_message(user_id, "assistant", reply[:500], intent="summary", channel=channel)
+        except Exception:
+            pass
     return {}
 
 
@@ -1203,18 +1221,20 @@ async def _send_next_app_card_with_context(
 
 
 async def chat_node(state: GraphState) -> dict:
+    import re as _re
     ctx = state["ctx"]
     sender = state["sender"]
     user_id = state["user_id"]
     channel = state["channel"]
-    text = state["text"].lower().strip()
+    text = (state["text"] or "").strip()
+    lower = text.lower()
     intent = state.get("intent", "chat")
     sel = state.get("selection") or {}
+    history = state.get("history") or []
+    user_ctx = state.get("user_ctx") or {}
     logger.info("chat: intent=%s", intent)
 
-    # User clicked a "Connect <App>" button → browser opens for OAuth.
-    # Use send_text (not ctx.send card) — cards get 429'd at this frequency.
-    # Do NOT regenerate OAuth links here (would overwrite pending_account_id).
+    # User clicked a "Connect <App>" button
     if intent == "linked":
         app = sel.get("app", "")
         if app:
@@ -1233,7 +1253,7 @@ async def chat_node(state: GraphState) -> dict:
 
     # Greetings — resume from wherever the user left off in onboarding
     greetings = {"hi", "hello", "hey", "start", "help", "get started", "setup", "set up"}
-    if text in greetings or text == "":
+    if lower in greetings or lower == "":
         if channel == "asi1":
             try:
                 from db import repo
@@ -1241,7 +1261,6 @@ async def chat_node(state: GraphState) -> dict:
                 if user:
                     remaining = await _get_onboarding_step(user_id)
                     if remaining:
-                        # Send ONE card with context in the narration — avoids rate-limit
                         await _send_next_app_card_with_context(ctx, sender, user_id, remaining,
                             prefix=f"Welcome back! Still need to connect {len(remaining)} app(s).")
                     else:
@@ -1250,7 +1269,6 @@ async def chat_node(state: GraphState) -> dict:
                     return {}
             except Exception as exc:
                 logger.warning("chat: user lookup failed: %s", exc)
-            # New user
             await ctx.send(sender, welcome_card())
             await asyncio.sleep(2)
             await ctx.send(sender, connect_form())
@@ -1259,29 +1277,124 @@ async def chat_node(state: GraphState) -> dict:
                 "Open Margin in ASI:One to complete the Connect form and link your phone.")
         return {}
 
+    # Letter lookup — "what's B?", "tell me about C", "what is A"
+    letter_match = _re.match(r"(?:what[\'']?s?|tell me about|what is|show me)\s+([a-eA-E])\b", lower)
+    if letter_match:
+        letter = letter_match.group(1).upper()
+        try:
+            from db import repo
+            brief = await repo.get_today_brief(user_id)
+            letters = (brief or {}).get("letters") or {}
+            if letter in letters:
+                item = await repo.get_item(user_id, letters[letter])
+                if item:
+                    reply = f"{letter} — {item['title']}"
+                    if item.get("course"):
+                        reply += f" ({item['course']})"
+                    if item.get("due_at"):
+                        try:
+                            due = datetime.fromisoformat(item["due_at"].replace("Z", "+00:00"))
+                            tz_name = user_ctx.get("tz", "America/Phoenix")
+                            local_due = due.astimezone(ZoneInfo(tz_name))
+                            reply += f"\nDue: {local_due.strftime('%a %-m/%-d at %-I:%M %p')}"
+                        except Exception:
+                            reply += f"\nDue: {item['due_at'][:10]}"
+                    if item.get("quote"):
+                        reply += f"\n{item['quote'][:200]}"
+                    await send_text(ctx, sender, reply)
+                    try:
+                        await repo.save_message(user_id, "assistant", reply, intent="letter_lookup", channel=channel)
+                    except Exception:
+                        pass
+                    return {}
+        except Exception as exc:
+            logger.warning("chat: letter lookup failed: %s", exc)
+
+    # Budget query
+    if intent == "budget":
+        try:
+            from db import repo
+            amount = await repo.safe_to_spend(user_id)
+            if amount > 0:
+                reply = f"You have ${amount:.2f} safe to spend this week."
+            elif amount < 0:
+                reply = f"You're ${abs(amount):.2f} over budget this week. Consider cutting flexible spend."
+            else:
+                reply = "Budget isn't set up yet — complete the Connect form to add your income and bills."
+            await send_text(ctx, sender, reply)
+            try:
+                await repo.save_message(user_id, "assistant", reply, intent="budget", channel=channel)
+            except Exception:
+                pass
+            return {}
+        except Exception as exc:
+            logger.warning("chat: budget query failed: %s", exc)
+
+    # Build rich system context
+    tz = user_ctx.get("tz", "America/Phoenix")
+    now_local = datetime.now(ZoneInfo(tz))
+
+    connected_apps: list[str] = []
+    pending_plan_info = ""
+    budget_hint = ""
     try:
-        reply = await fast(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are Margin, a proactive AI chief-of-staff for an ASU student. "
-                        "Answer concisely and helpfully. You can: plan the week ('plan my week'), "
-                        "show a daily brief ('summary'), connect apps, manage budget, plan calendar blocks. "
-                        "Hard rules: never do coursework for them, only create Gmail drafts (not send), never delete events. "
-                        "If they ask for a summary or daily update, tell them to type 'summary'. "
-                        "If they ask to reset/disconnect, tell them to type 'reset'. "
-                        "Keep replies under 4 sentences. Be specific and actionable."
-                    ),
-                },
-                {"role": "user", "content": state["text"]},
-            ],
-            timeout=15,
-        )
+        from db import repo
+        # Connected apps
+        canvas_row = await repo.get_connection(user_id, "canvas")
+        if canvas_row and canvas_row.get("status") == "active":
+            connected_apps.append("Canvas")
+        from integrations import composio_tools
+        for provider, label in (("gmail", "Gmail"), ("gcal", "Google Calendar"), ("slack", "Slack")):
+            try:
+                st = await composio_tools.connection_status(user_id, provider)
+                if st.status == "active":
+                    connected_apps.append(label)
+            except Exception:
+                pass
+        # Pending plan
+        pending = await repo.pending_plan_for(user_id)
+        if pending:
+            pending_plan_info = " There is a pending plan awaiting approval."
+        # Budget
+        try:
+            amount = await repo.safe_to_spend(user_id)
+            if amount != 0:
+                budget_hint = f" Safe to spend this week: ${amount:.2f}."
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    apps_str = ", ".join(connected_apps) if connected_apps else "none connected yet"
+    system_prompt = (
+        f"You are Margin, a proactive AI chief-of-staff for an ASU student. "
+        f"Today is {now_local.strftime('%A, %B %-d, %Y')}. "
+        f"Connected apps: {apps_str}.{pending_plan_info}{budget_hint} "
+        "You can: plan the week ('plan my week'), show daily brief ('summary'), "
+        "connect apps, check budget, block calendar time. "
+        "Hard rules: never do coursework, only create Gmail drafts (never send), never delete events. "
+        "Keep replies under 4 sentences. Be specific and actionable."
+    )
+
+    # Build messages with full history
+    messages = [{"role": "system", "content": system_prompt}]
+    for turn in history[-6:]:
+        messages.append({"role": turn["role"], "content": turn["content"]})
+    messages.append({"role": "user", "content": state["text"]})
+
+    try:
+        reply = await fast(messages, timeout=15)
     except Exception:
         reply = None
 
-    await send_text(ctx, sender, reply or "I'm here! Try 'plan my week' to block time for your assignments.")
+    final_reply = reply or "I'm here! Try 'plan my week' to block time for your assignments."
+    await send_text(ctx, sender, final_reply)
+
+    try:
+        from db import repo
+        await repo.save_message(user_id, "assistant", final_reply, intent=intent, channel=channel)
+    except Exception:
+        pass
     return {}
 
 
@@ -1378,6 +1491,31 @@ async def handle(
     """Single-turn orchestration. Sends all replies via ctx."""
     import re as _re
     clean_text = _re.sub(r"@\w+", "", text or "").strip()
+
+    # Load conversation history and user profile (best-effort)
+    history: list[dict] = []
+    user_ctx: dict = {}
+    try:
+        from db import repo
+        history = await asyncio.wait_for(
+            repo.get_recent_messages(user_id, limit=8), timeout=3
+        )
+        user_row = await asyncio.wait_for(repo.get_user(user_id), timeout=3)
+        user_ctx = dict(user_row) if user_row else {}
+    except Exception:
+        pass
+
+    # Persist the incoming user message (best-effort, non-blocking)
+    if clean_text and not selection:
+        try:
+            from db import repo
+            await asyncio.wait_for(
+                repo.save_message(user_id, "user", clean_text, channel=channel),
+                timeout=3,
+            )
+        except Exception:
+            pass
+
     state: GraphState = {
         "ctx": ctx,
         "sender": sender,
@@ -1391,6 +1529,8 @@ async def handle(
         "plan_id": None,
         "actions": [],
         "gather_error": None,
+        "history": history,
+        "user_ctx": user_ctx,
     }
     try:
         await _app.ainvoke(state)

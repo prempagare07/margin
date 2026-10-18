@@ -469,6 +469,19 @@ AS $$
       );
 $$;
 
+-- 12. Conversation history (in-chat memory)
+CREATE TABLE IF NOT EXISTS public.messages (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id text NOT NULL REFERENCES public.users(user_id),
+    role text NOT NULL CHECK (role IN ('user', 'assistant')),
+    content text NOT NULL CHECK (length(content) > 0),
+    intent text,
+    channel text,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS messages_user_recent_idx
+    ON public.messages(user_id, created_at DESC);
+
 COMMIT;
 
 -- After loading Plaid sandbox history, materialize weeks older than the

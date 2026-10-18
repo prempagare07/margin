@@ -695,6 +695,37 @@ async def safe_to_spend(user_id: str) -> float:
     return _safe_to_spend(row, row["bills"], row["spent"], row["today"])
 
 
+async def save_message(
+    user_id: str, role: str, content: str,
+    *, intent: str | None = None, channel: str | None = None,
+) -> None:
+    if role not in {"user", "assistant"}:
+        raise ValueError("role must be user or assistant")
+    content = (content or "").strip()[:2000]
+    if not content:
+        return
+    # Ensure user row exists so FK holds (no-op if already there)
+    await _one(
+        "INSERT INTO public.users (user_id) VALUES (%s) ON CONFLICT DO NOTHING",
+        (user_id,),
+    )
+    await _one(
+        """INSERT INTO public.messages (user_id, role, content, intent, channel)
+           VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+        (user_id, role, content, intent, channel),
+    )
+
+
+async def get_recent_messages(user_id: str, *, limit: int = 10) -> list[dict]:
+    """Return last N turns in chronological order."""
+    rows = await _all(
+        """SELECT role, content, intent FROM public.messages
+           WHERE user_id = %s ORDER BY created_at DESC LIMIT %s""",
+        (user_id, limit),
+    )
+    return list(reversed(rows))
+
+
 async def delete_user(user_id: str) -> None:
     """Delete all data for a user (connections, items, plans, nudges, briefs, budget, bills, user row).
 
@@ -709,6 +740,7 @@ async def delete_user(user_id: str) -> None:
             "public.plans",
             "public.nudges",
             "public.briefs",
+            "public.messages",
             "public.items",
             "public.connections",
             "public.bills",
