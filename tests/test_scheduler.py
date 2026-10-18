@@ -16,6 +16,7 @@ from channels.scheduler import (
     _brief_sent_today,
     _nudge_already_sent,
     _safe_to_spend,
+    _items_for_brief,
 )
 
 
@@ -100,6 +101,28 @@ async def test_morning_brief_letters_recorded(monkeypatch):
     brief = list(_briefs.values())[0]
     assert brief["user_id"] == "u4"
     assert "A" in brief["letters"]
+
+
+@pytest.mark.asyncio
+async def test_production_brief_uses_orchestrator_calendar_items(monkeypatch):
+    calendar_item = {
+        "item_id": "generated-block",
+        "user_id": "u4",
+        "kind": "event",
+        "title": "Generated study block",
+        "starts_at": "2026-10-19T18:00:00+00:00",
+        "ends_at": "2026-10-19T19:00:00+00:00",
+        "source": "gcal",
+        "source_id": "event-1",
+        "status": "open",
+    }
+    monkeypatch.setattr("channels.scheduler.FAKE", False)
+    monkeypatch.setattr("channels.scheduler._database_enabled", lambda: True)
+    gather = AsyncMock(return_value=([calendar_item], [], None))
+    monkeypatch.setattr("channels.scheduler._gather_direct", gather)
+
+    assert await _items_for_brief("u4") == [calendar_item]
+    gather.assert_awaited_once_with("u4")
 
 
 @pytest.mark.asyncio

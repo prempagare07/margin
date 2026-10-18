@@ -33,6 +33,23 @@ async def test_send_message_contract(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_threaded_send_falls_back_only_for_unsendable_space(monkeypatch):
+    call = AsyncMock(side_effect=[
+        response(409, {"error": {"code": "SPACE_NOT_SENDABLE"}}),
+        response(200, {"id": "message-out"}),
+    ])
+    monkeypatch.setattr(photon_client, "_request", call)
+    await photon_client.send_message(
+        "space-1", "agent-1", "hello", idempotency_key="reply:one",
+        parent_message_id="message-in",
+    )
+    first, second = call.await_args_list
+    assert first.kwargs["json"]["parentMessageId"] == "message-in"
+    assert "parentMessageId" not in second.kwargs["json"]
+    assert second.kwargs["idempotency_key"].startswith("margin-unthreaded-")
+
+
+@pytest.mark.asyncio
 async def test_line_assignment_new(monkeypatch):
     monkeypatch.setattr(photon_client, "_request", AsyncMock(return_value=response(
         200, {"assignment": {"handle": "+15555550100", "assignedPhoneNumber": "+15555550999"}}

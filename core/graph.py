@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, TypedDict
 from zoneinfo import ZoneInfo
@@ -31,6 +32,56 @@ from core.chat import send_text
 from core.llm import fast, plan as llm_plan
 
 logger = logging.getLogger(__name__)
+
+
+def _brief_letter(text: str) -> str | None:
+    """Return the A-E label from a terse question about today's text brief."""
+    value = (text or "").strip()
+    direct = re.fullmatch(r"([A-E])[\s?.!]*", value, re.I)
+    if direct:
+        return direct.group(1).upper()
+    question = re.fullmatch(
+        r"(?:what(?:['’]?s|\s+is)|tell\s+me\s+about|show\s+me|"
+        r"details?(?:\s+(?:for|on))?|calendar(?:\s+(?:reminder|item))?|reminder|item)\s+"
+        r"(?:(?:calendar|brief|schedule)\s+)?(?:reminder\s+|item\s+)?([A-E])"
+        r"(?:\s+(?:on|from)\s+(?:my\s+)?(?:calendar|brief|schedule))?[\s?.!]*",
+        value,
+        re.I,
+    )
+    return question.group(1).upper() if question else None
+
+
+def _brief_item_text(letter: str, item: dict, tz_name: str) -> str:
+    """Render a brief item as a compact, deterministic text response."""
+    reply = f"{letter} — {item['title']}"
+    if item.get("course"):
+        reply += f" ({item['course']})"
+
+    def local_time(raw: str) -> datetime:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(ZoneInfo(tz_name))
+
+    if item.get("starts_at"):
+        try:
+            starts = local_time(item["starts_at"])
+            when = starts.strftime("%a %-m/%-d at %-I:%M %p")
+            if item.get("ends_at"):
+                ends = local_time(item["ends_at"])
+                when += f"–{ends.strftime('%-I:%M %p')}"
+            reply += f"\nWhen: {when}"
+        except (TypeError, ValueError):
+            reply += f"\nWhen: {str(item['starts_at'])[:16]}"
+    elif item.get("due_at"):
+        try:
+            reply += f"\nDue: {local_time(item['due_at']).strftime('%a %-m/%-d at %-I:%M %p')}"
+        except (TypeError, ValueError):
+            reply += f"\nDue: {str(item['due_at'])[:10]}"
+    if item.get("location"):
+        reply += f"\nWhere: {str(item['location'])[:160]}"
+    if item.get("quote"):
+        reply += f"\n{str(item['quote'])[:200]}"
+    if item.get("source_url"):
+        reply += f"\n{item['source_url']}"
+    return reply
 
 
 def _fake_specialists() -> bool:
@@ -129,6 +180,11 @@ async def classify_node(state: GraphState) -> dict:
 
     # Greetings always go to chat — never reclassify via LLM
     if lower in {"hi", "hello", "hey", "start", "help", "get started", "setup", "set up", ""}:
+        return {"intent": "chat"}
+
+    # A brief letter is a lookup, even when the user says "calendar reminder B".
+    # Handle it before broad calendar/schedule keywords route to setup/planning.
+    if _brief_letter(state["text"] or ""):
         return {"intent": "chat"}
 
     if any(k in lower for k in ("summary", "what happened", "update me", "brief me", "what's new", "whats new", "catch me up", "catch up")):
@@ -1225,7 +1281,6 @@ async def _send_next_app_card_with_context(
 
 
 async def chat_node(state: GraphState) -> dict:
-    import re as _re
     ctx = state["ctx"]
     sender = state["sender"]
     user_id = state["user_id"]
@@ -1281,10 +1336,10 @@ async def chat_node(state: GraphState) -> dict:
                 "Open Margin in ASI:One to complete the Connect form and link your phone.")
         return {}
 
-    # Letter lookup — "what's B?", "tell me about C", "what is A"
-    letter_match = _re.match(r"(?:what[\'']?s?|tell me about|what is|show me)\s+([a-eA-E])\b", lower)
-    if letter_match:
-        letter = letter_match.group(1).upper()
+    # Brief lookup — "B", "what's B?", or "calendar reminder B".
+    letter = _brief_letter(text)
+    if letter:
+        reply = ""
         try:
             from db import repo
             brief = await repo.get_today_brief(user_id)
@@ -1292,27 +1347,26 @@ async def chat_node(state: GraphState) -> dict:
             if letter in letters:
                 item = await repo.get_item(user_id, letters[letter])
                 if item:
-                    reply = f"{letter} — {item['title']}"
-                    if item.get("course"):
-                        reply += f" ({item['course']})"
-                    if item.get("due_at"):
-                        try:
-                            due = datetime.fromisoformat(item["due_at"].replace("Z", "+00:00"))
-                            tz_name = user_ctx.get("tz", "America/Phoenix")
-                            local_due = due.astimezone(ZoneInfo(tz_name))
-                            reply += f"\nDue: {local_due.strftime('%a %-m/%-d at %-I:%M %p')}"
-                        except Exception:
-                            reply += f"\nDue: {item['due_at'][:10]}"
-                    if item.get("quote"):
-                        reply += f"\n{item['quote'][:200]}"
-                    await send_text(ctx, sender, reply)
-                    try:
-                        await repo.save_message(user_id, "assistant", reply, intent="letter_lookup", channel=channel)
-                    except Exception:
-                        pass
-                    return {}
+                    reply = _brief_item_text(
+                        letter, item, user_ctx.get("tz", "America/Phoenix")
+                    )
+            if not reply:
+                reply = (
+                    f"I couldn't find {letter} in today's brief. "
+                    "Reply with a letter shown in the latest brief."
+                )
+            await send_text(ctx, sender, reply)
+            try:
+                await repo.save_message(
+                    user_id, "assistant", reply, intent="letter_lookup", channel=channel
+                )
+            except Exception:
+                pass
+            return {}
         except Exception as exc:
             logger.warning("chat: letter lookup failed: %s", exc)
+            await send_text(ctx, sender, "I couldn't load today's brief. Please try again shortly.")
+            return {}
 
     # Budget query
     if intent == "budget":

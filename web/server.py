@@ -45,6 +45,26 @@ app.include_router(canvas_router)
 
 _PROCESSED_PHOTON_MESSAGES: OrderedDict[str, None] = OrderedDict()
 _PHOTON_DEDUPE_LIMIT = 2048
+_PHOTON_BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _ignore_photon_event(reason: str, message: object | None = None) -> Response:
+    """Acknowledge unsupported events while leaving metadata-only diagnostics."""
+    content_type = sender_kind = "missing"
+    if isinstance(message, dict):
+        content = message.get("content")
+        sender = message.get("sentBy")
+        if isinstance(content, dict):
+            content_type = str(content.get("type") or "missing")
+        if isinstance(sender, dict):
+            sender_kind = str(sender.get("kind") or "missing")
+    logger.info(
+        "photon_webhook: ignored reason=%s content_type=%s sender_kind=%s",
+        reason,
+        content_type,
+        sender_kind,
+    )
+    return Response(status_code=200)
 
 # ---------------------------------------------------------------------------
 # Health
@@ -96,27 +116,32 @@ async def photon_webhook(request: Request) -> Response:
         raise HTTPException(status_code=400, detail="Bad event")
 
     if event.get("type") != "message.received":
-        return Response(status_code=200)
+        return _ignore_photon_event("event_type")
 
     data = event.get("data")
     message = data.get("object") if isinstance(data, dict) else None
     if not isinstance(message, dict):
-        return Response(status_code=200)
+        return _ignore_photon_event("message_missing")
     content = message.get("content")
     sent_by = message.get("sentBy")
     space = message.get("space")
     if not all(isinstance(value, dict) for value in (content, sent_by, space)):
-        return Response(status_code=200)
+        return _ignore_photon_event("snapshot_missing", message)
     if content.get("type") != "text" or sent_by.get("kind") == "agent":
-        return Response(status_code=200)
+        return _ignore_photon_event("not_inbound_text", message)
 
     message_id = message.get("id")
     sender_handle = sent_by.get("handle")
     sender_id = sent_by.get("id")
     text = content.get("text")
     conversation_id = space.get("id")
+    # Received messages use receivedBy; addressedTo belongs to sent messages.
+    # Keep the latter and the participant list as compatibility fallbacks.
+    received_by = message.get("receivedBy")
     addressed_to = message.get("addressedTo")
-    agent_user_id = addressed_to.get("id") if isinstance(addressed_to, dict) else None
+    agent_user_id = received_by.get("id") if isinstance(received_by, dict) else None
+    if not agent_user_id:
+        agent_user_id = addressed_to.get("id") if isinstance(addressed_to, dict) else None
     if not agent_user_id:
         participants = space.get("participantIds")
         if isinstance(participants, list):
@@ -126,18 +151,22 @@ async def photon_webhook(request: Request) -> Response:
     if not all(isinstance(value, str) and value for value in (
         message_id, sender_handle, text, conversation_id, agent_user_id,
     )):
-        return Response(status_code=200)
+        return _ignore_photon_event("required_field_missing", message)
     if message_id in _PROCESSED_PHOTON_MESSAGES:
-        return Response(status_code=200)
+        return _ignore_photon_event("duplicate", message)
     _PROCESSED_PHOTON_MESSAGES[message_id] = None
     while len(_PROCESSED_PHOTON_MESSAGES) > _PHOTON_DEDUPE_LIMIT:
         _PROCESSED_PHOTON_MESSAGES.popitem(last=False)
 
     # Dispatch async so we return 200 immediately
-    asyncio.create_task(_dispatch(
+    task = asyncio.create_task(_dispatch(
         sender_handle, text, message_id, conversation_id, agent_user_id,
         verified_webhook=True,
     ))
+    # asyncio keeps only weak references to tasks. Retain webhook work until it
+    # completes so returning the immediate 200 cannot discard the reply path.
+    _PHOTON_BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_PHOTON_BACKGROUND_TASKS.discard)
     return Response(status_code=200)
 
 
@@ -157,7 +186,7 @@ async def _dispatch(
             verified_webhook=verified_webhook,
         )
     except Exception:
-        logger.warning("photon dispatch failed")
+        logger.exception("photon dispatch failed")
 
 
 # ---------------------------------------------------------------------------

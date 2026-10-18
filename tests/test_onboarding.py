@@ -33,6 +33,8 @@ def offline(monkeypatch):
     monkeypatch.setattr(onboarding.repo, "verify_phone_link", AsyncMock(return_value="trusted-user"))
     monkeypatch.setattr(onboarding.repo, "get_user_by_phone", AsyncMock(return_value={"user_id": "trusted-user"}))
     monkeypatch.setattr(onboarding.repo, "upsert_user", AsyncMock())
+    monkeypatch.setattr(graph, "_get_onboarding_step", AsyncMock(return_value=[]))
+    monkeypatch.setattr(graph, "_send_next_app_card_with_context", AsyncMock())
 
 
 def context():
@@ -41,6 +43,51 @@ def context():
 
 def texts(ctx):
     return "\n".join(c.text for call in ctx.send.await_args_list for c in call.args[1].content if isinstance(c, TextContent))
+
+
+@pytest.mark.parametrize("query,letter", [
+    ("A", "A"),
+    ("b?", "B"),
+    ("what's C?", "C"),
+    ("tell me about D", "D"),
+    ("calendar reminder E", "E"),
+    ("what is reminder A on my calendar?", "A"),
+])
+def test_brief_letter_queries_are_deterministic(query, letter):
+    assert graph._brief_letter(query) == letter
+
+
+@pytest.mark.asyncio
+async def test_photon_brief_query_returns_calendar_details_without_llm(monkeypatch):
+    from db import repo
+
+    monkeypatch.setattr(repo, "get_recent_messages", AsyncMock(return_value=[]))
+    monkeypatch.setattr(repo, "get_user", AsyncMock(return_value={
+        "user_id": "trusted-user", "tz": "America/Phoenix",
+    }))
+    monkeypatch.setattr(repo, "save_message", AsyncMock())
+    monkeypatch.setattr(repo, "get_today_brief", AsyncMock(return_value={
+        "letters": {"B": "calendar-block"},
+    }))
+    monkeypatch.setattr(repo, "get_item", AsyncMock(return_value={
+        "item_id": "calendar-block",
+        "title": "Study for circuits",
+        "starts_at": "2026-10-19T18:00:00Z",
+        "ends_at": "2026-10-19T19:30:00Z",
+        "location": "Hayden Library",
+        "source": "gcal",
+        "source_id": "event-1",
+    }))
+    ctx = context()
+
+    await graph.handle(
+        ctx, "trusted-user", "calendar reminder B", "photon", None, "trusted-user"
+    )
+
+    answer = texts(ctx)
+    assert "B — Study for circuits" in answer
+    assert "When:" in answer and "Hayden Library" in answer
+    graph.fast.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -226,6 +273,37 @@ async def test_webhook_requires_real_signature_before_phone_linking(monkeypatch)
         monkeypatch.setenv("PHOTON_WEBHOOK_SECRET", "")
         assert (await client.post("/webhooks/photon", content=payload)).status_code == 503
         dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_webhook_uses_received_by_from_live_inbound_snapshot(monkeypatch):
+    from web import server
+    secret = "whsec_" + base64.b64encode(b"local-webhook-secret-for-test-only").decode()
+    monkeypatch.setenv("PHOTON_WEBHOOK_SECRET", secret)
+    server._PROCESSED_PHOTON_MESSAGES.clear()
+    dispatch = AsyncMock()
+    monkeypatch.setattr(server, "_dispatch", dispatch)
+    event = json.loads((Path(__file__).parent / "fixtures/photon/message_received.json").read_text())
+    message = event["data"]["object"]
+    message.pop("addressedTo")
+    message["receivedBy"] = {"id": "agent-live", "kind": "agent"}
+    message["space"]["participantIds"] = []
+    payload = json.dumps(event)
+    now = datetime.now(timezone.utc)
+    headers = {
+        "webhook-id": "event-live-shape",
+        "webhook-timestamp": str(int(now.timestamp())),
+        "webhook-signature": Webhook(secret).sign("event-live-shape", now, payload),
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=server.app), base_url="https://margin.test"
+    ) as client:
+        assert (await client.post("/webhooks/photon", content=payload, headers=headers)).status_code == 200
+        await asyncio.sleep(0)
+    dispatch.assert_awaited_once_with(
+        "+14805551234", "LINK A1B2C3", "msg-webhook", "space-1", "agent-live",
+        verified_webhook=True,
+    )
 
 
 @pytest.mark.asyncio

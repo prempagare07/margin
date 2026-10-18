@@ -102,8 +102,20 @@ async def send_message(
     if parent_message_id:
         payload["parentMessageId"] = parent_message_id
     response = await _request("POST", "/messages", json=payload, idempotency_key=idempotency_key)
+    code = _error_code(response) if response.is_error else ""
+    if response.status_code == 409 and code == "SPACE_NOT_SENDABLE" and parent_message_id:
+        # Photon direct iMessage spaces currently reject parent-threaded sends,
+        # even after the user initiates the conversation. Preserve delivery by
+        # retrying once without the parent under a distinct idempotency key.
+        fallback_payload = dict(payload)
+        fallback_payload.pop("parentMessageId", None)
+        fallback_key = "margin-unthreaded-" + hashlib.sha256(idempotency_key.encode()).hexdigest()
+        response = await _request(
+            "POST", "/messages", json=fallback_payload, idempotency_key=fallback_key
+        )
+        code = _error_code(response) if response.is_error else ""
     if response.is_error:
-        logger.warning("photon send failed status=%s code=%s", response.status_code, _error_code(response))
+        logger.warning("photon send failed status=%s code=%s", response.status_code, code)
         response.raise_for_status()
     result = response.json()
     return result if isinstance(result, dict) else {"data": result}

@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from core.graph import _fake_items, _fake_slots
+from core.graph import _fake_items, _fake_slots, _gather_direct
 from db import repo
 from channels.photon import send_text as send_photon_text
 
@@ -173,6 +173,28 @@ async def _safe_to_spend(user: dict) -> float:
 # Morning brief (7 am local)
 # ---------------------------------------------------------------------------
 
+async def _items_for_brief(user_id: str) -> list[dict]:
+    """Gather the real seven-day schedule in production, fixtures offline."""
+    if FAKE or not _database_enabled():
+        return _fake_items()
+    try:
+        items, _slots, planner_error = await _gather_direct(user_id)
+    except Exception as exc:
+        logger.warning("morning brief gather failed: %s", exc)
+        return []
+    if planner_error:
+        logger.warning("morning brief calendar incomplete: %s", planner_error)
+
+    def when(item: dict) -> datetime:
+        raw = item.get("starts_at") or item.get("due_at")
+        try:
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return datetime.max.replace(tzinfo=timezone.utc)
+
+    active = [item for item in items if item.get("status", "open") not in {"done", "snoozed"}]
+    return sorted(active, key=lambda item: (when(item), item.get("title", "")))
+
 async def send_morning_brief(user: dict) -> None:
     """Build and send the 7 am brief for one user."""
     user_id = user["user_id"]
@@ -182,8 +204,8 @@ async def send_morning_brief(user: dict) -> None:
         logger.debug("brief already sent today for %s", user_id)
         return
 
-    # Gather items
-    items = _fake_items() if FAKE else _fake_items()   # real path wired in P7+
+    # Gather the same real calendar/source data used by the orchestrator.
+    items = await _items_for_brief(user_id)
 
     if not items:
         return
@@ -195,14 +217,16 @@ async def send_morning_brief(user: dict) -> None:
     for i, item in enumerate(top):
         label = chr(65 + i)           # A, B, C…
         letters[label] = item["item_id"]
-        due = ""
-        if item.get("due_at"):
+        timing = ""
+        raw_time = item.get("starts_at") or item.get("due_at")
+        if raw_time:
             try:
-                dt = datetime.fromisoformat(item["due_at"].replace("Z", "+00:00"))
-                due = " (due " + dt.astimezone(ZoneInfo(tz)).strftime("%-m/%-d") + ")"
-            except Exception:
+                dt = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
+                label_text = "at" if item.get("starts_at") else "due"
+                timing = f" ({label_text} {dt.astimezone(ZoneInfo(tz)).strftime('%a %-I:%M %p')})"
+            except (TypeError, ValueError):
                 pass
-        lines.append(f"{label}. {item['title']}{due}")
+        lines.append(f"{label}. {item['title']}{timing}")
 
     safe = await _safe_to_spend(user)
     lines.append(f"\n💰 Safe to spend this week: ${safe:.0f}")
@@ -213,6 +237,13 @@ async def send_morning_brief(user: dict) -> None:
         user_id, text,
         idempotency_key=f"brief:{user_id}:{datetime.now(ZoneInfo(tz)).date()}",
     )
+    if _database_enabled():
+        # Brief letter lookups resolve through owned item rows. Gathering paths
+        # already cache most sources; this also covers newly generated events.
+        try:
+            await repo.upsert_items(top)
+        except Exception as exc:
+            logger.warning("morning brief item cache failed: %s", exc)
     await _record_brief(user_id, letters)
     logger.info("morning brief sent to %s (%s items)", user_id, len(top))
 
