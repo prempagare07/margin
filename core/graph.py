@@ -802,7 +802,7 @@ async def connect_node(state: GraphState) -> dict:
     # Show all app connection links — give ASI:One a moment between messages
     import asyncio as _aio
     await _aio.sleep(0.5)
-    await _send_link_card(ctx, sender, state["user_id"])
+    await _send_app_links_card(ctx, sender, state["user_id"])
     return {}
 
 
