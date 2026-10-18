@@ -694,23 +694,31 @@ async def connect_node(state: GraphState) -> dict:
         logger.warning("connect: account persistence failed")
         await send_text(ctx, sender, "Your account details could not be saved. Please try the Connect form again.")
         return {}
-    photon_number = os.getenv("PHOTON_SENDING_NUMBER", "")
     if result.phone_verified:
         phone_msg = "Your account and budget are saved. Your phone is already linked — you'll get the 7 AM brief by text."
     else:
-        dest = photon_number if photon_number else "Margin's SMS number"
-        phone_msg = (
-            f"Account saved! To get your 7 AM morning brief by text (daily action items from Canvas, Gmail & Slack), "
-            f"text this from your phone to {dest} within 10 minutes:\n\n"
-            f"LINK {result.link_code}\n\n"
-            "Once received, Margin will confirm and start sending you daily briefs and nudges."
-        )
+        try:
+            from integrations.photon_client import ensure_line_assignment
+            phone = onboarding.phone_number(onboarding.submission_fields(selection).get("phone"))
+            assigned_number = await ensure_line_assignment(phone)
+        except Exception:
+            logger.warning("connect: Photon line assignment unavailable")
+            phone_msg = (
+                "Your account and budget are saved, but iMessage linking isn't available right now. "
+                "Please try the Connect form again shortly."
+            )
+        else:
+            phone_msg = (
+                "Account saved! From the same phone you entered, send this as an iMessage "
+                f"to {assigned_number} within 10 minutes:\n\nLINK {result.link_code}\n\n"
+                "Once received, Margin will confirm and turn on daily briefs and nudges."
+            )
     await send_text(ctx, sender, phone_msg)
 
     # Show all app connection links — give ASI:One a moment between messages
     import asyncio as _aio
     await _aio.sleep(0.5)
-    await _send_app_links_card(ctx, sender, state["user_id"])
+    await _send_link_card(ctx, sender, state["user_id"])
     return {}
 
 
@@ -729,8 +737,8 @@ async def check_links_node(state: GraphState) -> dict:
             connected.add("Canvas")
         else:
             needs_connect.append("Canvas")
-    except Exception as exc:
-        logger.warning("check_links: canvas db error: %s", exc)
+    except Exception:
+        logger.warning("check_links: canvas db unavailable")
         needs_connect.append("Canvas")
 
     for provider in ("gmail", "gcal", "slack"):
@@ -748,7 +756,7 @@ async def check_links_node(state: GraphState) -> dict:
                 needs_connect.append(label)
         except Exception as exc:
             code = getattr(exc, "code", "STATUS_UNAVAILABLE")
-            logger.warning("check_links: provider=%s code=%s exc=%s", provider, code, exc)
+            logger.warning("check_links: provider=%s code=%s", provider, code)
             needs_connect.append(label)
 
     if connected:
@@ -824,8 +832,8 @@ async def _send_app_links_card(ctx, sender: str, user_id: str,
             except Exception as exc:
                 logger.warning("app_links: composio link failed app=%s: %s", label, exc)
 
-    logger.info("app_links: connected=%s unconnected=%s for %s",
-                sorted(connected_apps), sorted(links), sender[:20])
+    logger.info("app_links: connected=%s unconnected=%s",
+                sorted(connected_apps), sorted(links))
     try:
         await ctx.send(sender, link_buttons(links, connected=connected_apps))
     except Exception as exc:

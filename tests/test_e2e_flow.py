@@ -180,8 +180,8 @@ async def test_photon_plan_flow():
     sent = []
     # patch where PhotonCtx.send() resolves it (channels.photon imports it directly)
     with patch("channels.photon.send_message",
-               new=AsyncMock(side_effect=lambda to, text, **kw: sent.append(text) or {"ok": True})):
-        ph_ctx = PhotonCtx("+16027513236")
+               new=AsyncMock(side_effect=lambda space, sender, text, **kw: sent.append(text) or {"ok": True})):
+        ph_ctx = PhotonCtx("space-test", "agent-test", "message-test")
         await handle(ph_ctx, user_id="+16027513236", text="plan my week",
                      channel="photon", sender="+16027513236")
 

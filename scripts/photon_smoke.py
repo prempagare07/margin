@@ -1,6 +1,6 @@
-"""Smoke test: send a test SMS via Photon and verify delivery. Owner: Prem."""
+"""Smoke test: send into an already-linked Photon conversation. Owner: Prem."""
+import argparse
 import asyncio
-import os
 import sys
 
 from dotenv import load_dotenv
@@ -9,16 +9,17 @@ load_dotenv()
 
 
 async def main() -> None:
-    phone = os.environ.get("PHOTON_TEST_PHONES", "").split(",")[0].strip()
-    if not phone:
-        print("Set PHOTON_TEST_PHONES in .env")
-        sys.exit(1)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--user-id", required=True, help="linked Margin user ID")
+    args = parser.parse_args()
+    from channels.photon import send_text
 
-    from integrations.photon_client import send_message
-
-    print(f"Sending smoke test SMS to {phone} ...")
-    result = await send_message(phone, "Margin smoke test ✓ — if you got this, Photon is wired up.")
-    print(f"Result: {result}")
+    print("Sending Photon smoke test to the saved conversation ...")
+    result = await send_text(
+        args.user_id,
+        "Margin smoke test ✓ — if you got this, Photon is wired up.",
+        idempotency_key="margin-manual-smoke-v2",
+    )
     if result and result.get("ok") is not False:
         print("PASS")
     else:

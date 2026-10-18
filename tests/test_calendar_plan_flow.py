@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from uagents_core.contrib.protocols.chat import MetadataContent
+from uagents_core.contrib.protocols.chat import MetadataContent, TextContent
 
 from agents import planner
 from core import approval, graph
@@ -94,12 +94,14 @@ async def test_auto_select_refuses_multiple_writable_without_primary(monkeypatch
 
 @pytest.mark.asyncio
 async def test_check_links_auto_selects_unconfigured_active_calendar(monkeypatch):
+    from db import repo
     from integrations import composio_tools
 
     async def status(_user_id, provider):
         return ConnectionState(provider, "active", f"{provider}-account", {})
 
     monkeypatch.setattr(composio_tools, "connection_status", AsyncMock(side_effect=status))
+    monkeypatch.setattr(repo, "get_connection", AsyncMock(return_value=None))
     select = AsyncMock(return_value={"calendar_ids": ["primary"], "write_calendar_id": "primary"})
     monkeypatch.setattr(composio_tools, "auto_select_calendars", select)
     ctx = _ctx()
@@ -107,8 +109,12 @@ async def test_check_links_auto_selects_unconfigured_active_calendar(monkeypatch
     await graph.handle(ctx, "student", "", "asi1", {"action": "check_links"}, "student")
 
     select.assert_awaited_once_with("student")
-    sent = ctx.send.await_args.args[1]
-    assert "Google Calendar: connected" in sent.content[0].text
+    messages = [call.args[1] for call in ctx.send.await_args_list]
+    text = "\n".join(
+        content.text for message in messages for content in message.content
+        if isinstance(content, TextContent)
+    )
+    assert "Google Calendar" in text and "Connected:" in text
 
 
 def test_stored_calendar_actions_match_adapter_and_drop_invalid_blocks():
@@ -203,10 +209,7 @@ async def test_connect_card_uses_canvas_token_and_gcal_provider(monkeypatch):
     monkeypatch.setattr(composio_tools, "connect_link", links)
     ctx = _ctx()
 
-    await graph.connect_node({
-        "ctx": ctx, "sender": "student", "channel": "asi1", "user_id": "student",
-        "selection": {"action": "connect"},
-    })
+    await graph._send_link_card(ctx, "student", "student")
 
     payload = _payload(ctx.send.await_args.args[1])
     redirects = [child.get("action", {}).get("redirect") for child in payload["root"]["children"]]

@@ -930,10 +930,10 @@ async def test_onboarded_phone_is_blocked_until_link_then_routes_to_same_asi_ide
     dispatch, send = AsyncMock(), AsyncMock(return_value={"ok": True})
     monkeypatch.setattr(graph, "handle", dispatch)
     monkeypatch.setattr(photon, "send_message", send)
-    await photon.handle_inbound("+14805551234", "hi", user_id="other", verified_webhook=True)
+    await photon.handle_inbound("+14805551234", "hi", "msg-before", "space-1", "agent-1", verified_webhook=True)
     dispatch.assert_not_awaited()
-    await photon.handle_inbound("+14805551234", f"LINK {result.link_code}", verified_webhook=True)
-    assert "phone is linked" in send.await_args.args[1]
-    await photon.handle_inbound("+14805551234", "hi", user_id="other", verified_webhook=True)
+    await photon.handle_inbound("+14805551234", f"LINK {result.link_code}", "msg-link", "space-1", "agent-1", verified_webhook=True)
+    assert "phone is linked" in send.await_args.args[2]
+    await photon.handle_inbound("+14805551234", "hi", "msg-after", "space-1", "agent-1", verified_webhook=True)
     assert dispatch.await_args.kwargs["user_id"] == "alex"
     assert dispatch.await_args.kwargs["channel"] == "photon"

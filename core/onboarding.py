@@ -105,7 +105,7 @@ def submission_fields(selection: dict) -> dict:
 
 
 def link_code_hash(code: str) -> str:
-    return hashlib.sha256(("margin:phone-link:" + code).encode()).hexdigest()
+    return hashlib.sha256(("margin:phone-link:" + code.upper()).encode()).hexdigest()
 
 
 async def save(user_id: str, selection: dict) -> OnboardingResult:
@@ -117,9 +117,8 @@ async def save(user_id: str, selection: dict) -> OnboardingResult:
     cap = _money(fields.get("weekly_cap"), "Weekly cap")
     savings = _money(fields.get("savings_goal"), "Savings goal", Decimal(0))
     bills = _bills(fields.get("bills"))
-    import random
     import string as _string
-    code = "".join(random.choices(_string.ascii_uppercase + _string.digits, k=6))
+    code = "".join(secrets.choice(_string.ascii_uppercase + _string.digits) for _ in range(6))
     verified = await repo.save_onboarding(
         user_id, phone=phone, monthly_income=income, weekly_cap=cap,
         savings_goal=savings, bills=bills, code_hash=link_code_hash(code),

@@ -1,9 +1,11 @@
-"""Photon channel adapter — render ChatMessages as SMS text. Owner: Prem."""
+"""Photon iMessage channel adapter. Owner: Prem."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from uagents_core.contrib.protocols.chat import ChatMessage, MetadataContent, TextContent
@@ -13,163 +15,180 @@ from integrations.photon_client import send_message
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Render a ChatMessage to plain SMS text
-# ---------------------------------------------------------------------------
-
 def render_text(msg: ChatMessage) -> str:
-    """Convert a ChatMessage (possibly a card) to a short SMS string."""
     parts: list[str] = []
-
-    for c in msg.content:
-        if isinstance(c, TextContent) and c.text:
-            parts.append(c.text.strip())
-        elif isinstance(c, MetadataContent):
-            parts.extend(_render_card(c.metadata))
-
-    return "\n".join(p for p in parts if p)
+    for content in msg.content:
+        if isinstance(content, TextContent) and content.text:
+            parts.append(content.text.strip())
+        elif isinstance(content, MetadataContent):
+            parts.extend(_render_card(content.metadata))
+    return "\n".join(part for part in parts if part)
 
 
 def _render_card(meta: dict) -> list[str]:
     kind = meta.get("card_kind", "")
-    raw = meta.get("card_payload", "{}")
     try:
-        payload = json.loads(raw)
+        payload = json.loads(meta.get("card_payload", "{}"))
     except Exception:
         return []
-
     if kind == "form":
-        return [
-            payload.get("title", ""),
-            "Reply with: " + ", ".join(f["label"] for f in payload.get("fields", [])),
-        ]
-
+        return [payload.get("title", ""), "Reply with: " + ", ".join(
+            field["label"] for field in payload.get("fields", []) if "label" in field
+        )]
     if kind == "carousel":
         lines = [payload.get("title", "")]
-        for i, item in enumerate(payload.get("items", [])[:5]):
-            label = chr(65 + i)
-            lines.append(f"{label}. {item.get('title', '')} — {item.get('subtitle', '')}")
+        for index, item in enumerate(payload.get("items", [])[:5]):
+            lines.append(f"{chr(65 + index)}. {item.get('title', '')} — {item.get('subtitle', '')}")
         return lines
-
     if kind == "review":
         lines = [payload.get("title", "Review plan")]
-        for row in payload.get("summary_rows", []):
-            lines.append(f"• {row.get('label', '')}: {row.get('value', '')}")
+        lines.extend(f"• {row.get('label', '')}: {row.get('value', '')}" for row in payload.get("summary_rows", []))
         lines.append("Reply YES to approve or NO to cancel.")
         return lines
-
     if kind == "detail":
         lines = [payload.get("title", "")]
-        for row in payload.get("summary_rows", []):
-            lines.append(f"{row.get('label', '')}: {row.get('value', '')}")
-        ctas = payload.get("ctas", [])
-        if ctas:
-            options = " / ".join(c.get("label", "") for c in ctas[:3])
-            lines.append(f"Reply: {options}")
+        lines.extend(f"{row.get('label', '')}: {row.get('value', '')}" for row in payload.get("summary_rows", []))
+        if payload.get("ctas"):
+            lines.append("Reply: " + " / ".join(item.get("label", "") for item in payload["ctas"][:3]))
         return lines
-
     if kind == "custom":
         return _render_section(payload.get("root", {}))
-
     return []
 
 
 def _render_section(node: dict) -> list[str]:
     lines: list[str] = []
-    t = node.get("type", "")
-    if t == "section":
+    kind = node.get("type", "")
+    if kind == "section":
         if node.get("title"):
             lines.append(node["title"])
         for child in node.get("children", []):
             lines.extend(_render_section(child))
-    elif t in ("text", "heading"):
-        v = node.get("value") or node.get("text", "")
-        if v:
-            lines.append(v)
-    elif t == "button":
+    elif kind in ("text", "heading"):
+        value = node.get("value") or node.get("text", "")
+        if value:
+            lines.append(value)
+    elif kind == "button":
         lines.append(f"[{node.get('label', '')}]")
     return lines
 
 
-# ---------------------------------------------------------------------------
-# PhotonCtx — a minimal stand-in for uAgent Context for the Photon channel
-# ---------------------------------------------------------------------------
+def _reply_key(message_id: str, sequence: int) -> str:
+    digest = hashlib.sha256(f"{message_id}:reply:{sequence}".encode()).hexdigest()
+    return f"margin-reply-{digest}"
+
 
 class PhotonCtx:
-    """Wraps a phone number so graph.handle() can call ctx.send()."""
+    """Minimal graph context that replies in one Photon conversation."""
 
-    def __init__(self, phone: str) -> None:
-        self._phone = phone
-        self._sent: list[str] = []   # for testing
+    def __init__(self, space_id: str, sender_id: str, message_id: str) -> None:
+        self._space_id = space_id
+        self._sender_id = sender_id
+        self._message_id = message_id
+        self._sent: list[str] = []
 
     async def send(self, _to: str, message: Any) -> None:
-        """Called by graph nodes. Extracts text and sends via Photon."""
-        if isinstance(message, ChatMessage):
-            text = render_text(message)
-        else:
-            text = str(message)
-
+        text = render_text(message) if isinstance(message, ChatMessage) else str(message)
         if not text.strip():
             return
-
+        sequence = len(self._sent)
         self._sent.append(text)
-        await send_message(self._phone, text)
+        await send_message(
+            self._space_id,
+            self._sender_id,
+            text,
+            idempotency_key=_reply_key(self._message_id, sequence),
+            parent_message_id=self._message_id,
+        )
 
 
-# ---------------------------------------------------------------------------
-# Inbound dispatcher (called by web/server.py)
-# ---------------------------------------------------------------------------
+async def send_text(user_id: str, body: str, *, idempotency_key: str | None = None) -> dict | None:
+    """Send a scheduled text only after the user has initiated a conversation."""
+    from db import repo
+
+    row = await repo.get_user(user_id)
+    if not row or not row.get("photon_space_id") or not row.get("photon_user_id"):
+        logger.info("photon scheduled send skipped: no saved conversation")
+        return None
+    key = idempotency_key or "margin-send-" + hashlib.sha256(
+        f"{user_id}:{body}".encode()
+    ).hexdigest()
+    return await send_message(
+        row["photon_space_id"], row["photon_user_id"], body, idempotency_key=key
+    )
+
 
 async def handle_inbound(
-    phone: str, text: str, user_id: str | None = None, *, verified_webhook: bool = False,
+    sender_handle: str,
+    text: str,
+    message_id: str,
+    conversation_id: str,
+    agent_user_id: str,
+    *,
+    verified_webhook: bool = False,
 ) -> None:
-    """Dispatch an inbound Photon message through the graph.
-
-    Requires verified webhook provenance, then resolves the verified phone owner.
-    A LINK challenge is the only command accepted before ownership is verified.
-    The legacy user_id argument is ignored; it cannot override DB ownership.
-    """
+    """Verify LINK commands or dispatch a linked conversation to the graph."""
     from core import graph
     from core.chat import parse_selection
     from core.onboarding import InvalidSubmission, link_code_hash, phone_number
     from db import repo
 
-    if not verified_webhook:
+    if not verified_webhook or not all(
+        isinstance(value, str) and value for value in (text, message_id, conversation_id, agent_user_id)
+    ):
         return
     try:
-        phone = phone_number(phone)
+        phone = phone_number(sender_handle)
     except InvalidSubmission:
         return
-    if not isinstance(text, str):
-        return
-    # Possession comes from the signed provider event's sender, not from JSON.
-    if re.match(r"^\s*LINK(?:\s|$)", text, re.I):
-        match = re.fullmatch(r"\s*LINK\s+([A-Za-z0-9_-]{32})\s*", text, re.I)
+
+    link_prefix = re.match(r"^\s*LINK(?:\s|$)", text, re.I)
+    if link_prefix:
+        match = re.fullmatch(r"\s*LINK\s+([A-Z0-9]{6})\s*", text, re.I)
         try:
-            linked = await repo.verify_phone_link(phone, link_code_hash(match[1])) if match else None
+            linked = await repo.verify_phone_link(
+                phone, link_code_hash(match.group(1).upper())
+            ) if match else None
+            if linked:
+                await repo.upsert_user(
+                    linked,
+                    photon_space_id=conversation_id,
+                    photon_user_id=agent_user_id,
+                    text_opted_in_at=datetime.now(timezone.utc),
+                )
         except Exception:
-            logger.warning("photon: phone verification storage unavailable")
-            await send_message(phone, "Phone linking is temporarily unavailable. Please try again shortly.")
+            logger.warning("photon link storage unavailable")
+            await send_message(
+                conversation_id, agent_user_id,
+                "Phone linking is temporarily unavailable. Please try again shortly.",
+                idempotency_key=_reply_key(message_id, 0), parent_message_id=message_id,
+            )
             return
-        await send_message(phone, "Your phone is linked to Margin. You can now ask me questions here." if linked else
-                           "That link code is invalid, expired, or unavailable for this number. Submit the Connect form in ASI:One for a new code.")
+        reply = (
+            "Your phone is linked to Margin. Daily briefs are now on."
+            if linked else
+            "That link code is invalid, expired, or for a different number. Submit the Connect form for a new code."
+        )
+        await send_message(
+            conversation_id, agent_user_id, reply,
+            idempotency_key=_reply_key(message_id, 0), parent_message_id=message_id,
+        )
         return
+
     try:
         row = await repo.get_user_by_phone(phone)
-        uid = row["user_id"] if row else None
     except Exception:
-        uid = None
-    if not uid:
-        logger.warning("photon: unlinked sender — dropping message")
+        row = None
+    if not row or not row.get("photon_space_id") or not row.get("photon_user_id"):
+        logger.info("photon inbound skipped: sender or conversation is not linked")
         return
     selection = await parse_selection(text)
-
-    ctx = PhotonCtx(phone)
+    ctx = PhotonCtx(row["photon_space_id"], row["photon_user_id"], message_id)
     await graph.handle(
         ctx=ctx,
-        user_id=uid,
+        user_id=row["user_id"],
         text=text,
         channel="photon",
         selection=selection,
-        sender=phone,
+        sender=row["user_id"],
     )

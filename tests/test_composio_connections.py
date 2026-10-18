@@ -186,7 +186,7 @@ async def test_connect_link_is_restricted_and_persists_pending_without_proving_c
     assert kwargs["auth_configs"] == {"gmail": "auth-gmail"}
     assert kwargs["tools"] == {"gmail": {"enable": []}}
     assert kwargs["sandbox"] == {"enable": False} and not kwargs["proxy_execute"]
-    service.authorize.assert_called_once_with("gmail", callback_url="https://margin.test/connected")
+    service.authorize.assert_called_once_with("gmail", callback_url="https://margin.test/connected?app=Gmail")
     assert service.sdk_call.call_args.kwargs["retry"] is False
     saved = service.store["alex", "gmail"]
     assert saved["status"] == "pending" and saved["composio_account_id"] is None

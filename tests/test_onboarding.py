@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import json
+from pathlib import Path
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from uagents_core.contrib.protocols.chat import ChatMessage, MetadataContent, Te
 
 from core import chat, graph, onboarding
 from channels import photon
+from integrations import photon_client
 
 
 FORM = {"action": "connect", "phone": "+1 (480) 555-1234", "monthly_income": "1500.50",
@@ -27,8 +29,10 @@ def offline(monkeypatch):
     monkeypatch.setattr(chat, "fast", AsyncMock(side_effect=AssertionError("No LLM for form data")))
     monkeypatch.setattr(graph, "fast", AsyncMock(side_effect=AssertionError("No LLM for Connect")))
     monkeypatch.setattr(photon, "send_message", AsyncMock(return_value={"ok": True}))
+    monkeypatch.setattr(photon_client, "ensure_line_assignment", AsyncMock(return_value="+14805559999"))
     monkeypatch.setattr(onboarding.repo, "verify_phone_link", AsyncMock(return_value="trusted-user"))
     monkeypatch.setattr(onboarding.repo, "get_user_by_phone", AsyncMock(return_value={"user_id": "trusted-user"}))
+    monkeypatch.setattr(onboarding.repo, "upsert_user", AsyncMock())
 
 
 def context():
@@ -42,7 +46,6 @@ def texts(ctx):
 @pytest.mark.asyncio
 async def test_connect_routes_without_llm_and_ignores_payload_identity_and_entitlements(monkeypatch):
     ctx = context()
-    monkeypatch.setenv("PHOTON_SENDING_NUMBER", "+14805559999")
     await graph.handle(ctx, "trusted-user", "", "asi1", {**FORM, "user_id": "victim", "plan": "pro", "phone_verified": True}, "trusted-user")
     call = onboarding.repo.save_onboarding.await_args
     assert call.args == ("trusted-user",)
@@ -151,18 +154,23 @@ async def test_protocol_accepts_metadata_form_submission_once():
 async def test_link_consumed_before_normal_graph_and_bound_to_signed_sender(monkeypatch):
     dispatch = AsyncMock()
     monkeypatch.setattr(graph, "handle", dispatch)
-    code = "a" * 32
-    await photon.handle_inbound("+1 (480) 555-1234", f"LINK {code}", user_id="victim", verified_webhook=True)
+    code = "a1b2c3"
+    await photon.handle_inbound("+1 (480) 555-1234", f"LINK {code}", "msg-1", "space-1", "agent-1", verified_webhook=True)
     onboarding.repo.verify_phone_link.assert_awaited_once_with("+14805551234", onboarding.link_code_hash(code))
     dispatch.assert_not_awaited()
-    assert "phone is linked" in photon.send_message.await_args.args[1]
+    onboarding.repo.upsert_user.assert_awaited_once()
+    assert onboarding.repo.upsert_user.await_args.kwargs["photon_space_id"] == "space-1"
+    assert onboarding.repo.upsert_user.await_args.kwargs["photon_user_id"] == "agent-1"
+    assert onboarding.repo.upsert_user.await_args.kwargs["text_opted_in_at"] is not None
+    assert "phone is linked" in photon.send_message.await_args.args[2]
+    assert photon.send_message.await_args.kwargs["parent_message_id"] == "msg-1"
 
 
 @pytest.mark.asyncio
 async def test_unsigned_phone_input_cannot_link_or_dispatch(monkeypatch):
     dispatch = AsyncMock()
     monkeypatch.setattr(graph, "handle", dispatch)
-    await photon.handle_inbound("+14805551234", "LINK " + "a" * 32, user_id="victim")
+    await photon.handle_inbound("+14805551234", "LINK A1B2C3", "msg-1", "space-1", "agent-1")
     onboarding.repo.verify_phone_link.assert_not_awaited()
     onboarding.repo.get_user_by_phone.assert_not_awaited()
     dispatch.assert_not_awaited()
@@ -173,11 +181,12 @@ async def test_unsigned_phone_input_cannot_link_or_dispatch(monkeypatch):
 async def test_phone_identity_always_comes_from_database(monkeypatch):
     dispatch = AsyncMock()
     monkeypatch.setattr(graph, "handle", dispatch)
-    await photon.handle_inbound("+14805551234", "hi", user_id="victim", verified_webhook=True)
+    onboarding.repo.get_user_by_phone.return_value.update(photon_space_id="saved-space", photon_user_id="saved-agent")
+    await photon.handle_inbound("+14805551234", "hi", "msg-2", "incoming-space", "incoming-agent", verified_webhook=True)
     assert dispatch.await_args.kwargs["user_id"] == "trusted-user"
     onboarding.repo.get_user_by_phone.return_value = None
     dispatch.reset_mock()
-    await photon.handle_inbound("+14805551234", "hi", user_id="victim", verified_webhook=True)
+    await photon.handle_inbound("+14805551234", "hi", "msg-3", "incoming-space", "incoming-agent", verified_webhook=True)
     dispatch.assert_not_awaited()
 
 
@@ -185,8 +194,8 @@ async def test_phone_identity_always_comes_from_database(monkeypatch):
 async def test_bad_link_does_not_claim_success_or_access_user_data(monkeypatch):
     onboarding.repo.verify_phone_link.return_value = None
     monkeypatch.setattr(graph, "handle", AsyncMock())
-    await photon.handle_inbound("+14805551234", "LINK " + "a" * 32, verified_webhook=True)
-    assert "invalid" in photon.send_message.await_args.args[1]
+    await photon.handle_inbound("+14805551234", "LINK A1B2C3", "msg-4", "space-1", "agent-1", verified_webhook=True)
+    assert "invalid" in photon.send_message.await_args.args[2]
     onboarding.repo.get_user_by_phone.assert_not_awaited()
     graph.handle.assert_not_awaited()
 
@@ -196,10 +205,11 @@ async def test_webhook_requires_real_signature_before_phone_linking(monkeypatch)
     monkeypatch.setenv("SENTRY_DSN", "")
     from web import server
     secret = "whsec_" + base64.b64encode(b"local-webhook-secret-for-test-only").decode()
-    monkeypatch.setattr(server, "_WEBHOOK_SECRET", secret)
+    monkeypatch.setenv("PHOTON_WEBHOOK_SECRET", secret)
+    server._PROCESSED_PHOTON_MESSAGES.clear()
     dispatch = AsyncMock()
     monkeypatch.setattr(server, "_dispatch", dispatch)
-    payload = json.dumps({"type": "message.received", "data": {"from": "+14805551234", "body": "LINK " + "a" * 32}})
+    payload = (Path(__file__).parent / "fixtures/photon/message_received.json").read_text()
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url="https://margin.test") as client:
         assert (await client.post("/webhooks/photon", content=payload)).status_code == 401
         dispatch.assert_not_awaited()
@@ -208,8 +218,41 @@ async def test_webhook_requires_real_signature_before_phone_linking(monkeypatch)
                    "webhook-signature": Webhook(secret).sign("event-one", now, payload)}
         assert (await client.post("/webhooks/photon", content=payload, headers=headers)).status_code == 200
         await asyncio.sleep(0)
-        dispatch.assert_awaited_once_with("+14805551234", "LINK " + "a" * 32, verified_webhook=True)
+        dispatch.assert_awaited_once_with(
+            "+14805551234", "LINK A1B2C3", "msg-webhook", "space-1", "agent-1",
+            verified_webhook=True,
+        )
         dispatch.reset_mock()
-        monkeypatch.setattr(server, "_WEBHOOK_SECRET", "")
+        monkeypatch.setenv("PHOTON_WEBHOOK_SECRET", "")
         assert (await client.post("/webhooks/photon", content=payload)).status_code == 503
+        dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_webhook_ignores_agent_echo_and_duplicate_delivery(monkeypatch):
+    from web import server
+    secret = "whsec_" + base64.b64encode(b"local-webhook-secret-for-test-only").decode()
+    monkeypatch.setenv("PHOTON_WEBHOOK_SECRET", secret)
+    server._PROCESSED_PHOTON_MESSAGES.clear()
+    dispatch = AsyncMock()
+    monkeypatch.setattr(server, "_dispatch", dispatch)
+    event = json.loads((Path(__file__).parent / "fixtures/photon/message_received.json").read_text())
+
+    async def post(client, value, delivery):
+        payload = json.dumps(value)
+        now = datetime.now(timezone.utc)
+        headers = {"webhook-id": delivery, "webhook-timestamp": str(int(now.timestamp())),
+                   "webhook-signature": Webhook(secret).sign(delivery, now, payload)}
+        return await client.post("/webhooks/photon", content=payload, headers=headers)
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url="https://margin.test") as client:
+        assert (await post(client, event, "delivery-one")).status_code == 200
+        assert (await post(client, event, "delivery-two")).status_code == 200
+        await asyncio.sleep(0)
+        dispatch.assert_awaited_once()
+        dispatch.reset_mock()
+        event["data"]["object"]["id"] = "msg-echo"
+        event["data"]["object"]["sentBy"]["kind"] = "agent"
+        assert (await post(client, event, "delivery-three")).status_code == 200
+        await asyncio.sleep(0)
         dispatch.assert_not_awaited()

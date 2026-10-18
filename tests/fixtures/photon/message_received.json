@@ -1,0 +1,14 @@
+{
+  "id": "event-test",
+  "apiVersion": "2026-07-01",
+  "type": "message.received",
+  "data": {
+    "object": {
+      "id": "msg-webhook",
+      "content": {"type": "text", "format": "plain", "text": "LINK A1B2C3"},
+      "sentBy": {"id": "customer-1", "handle": "+14805551234", "kind": "user"},
+      "addressedTo": {"id": "agent-1"},
+      "space": {"id": "space-1", "kind": "direct", "participantIds": ["customer-1", "agent-1"]}
+    }
+  }
+}

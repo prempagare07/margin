@@ -12,7 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from core.graph import _fake_items, _fake_slots
 from db import repo
-from integrations.photon_client import send_message
+from channels.photon import send_text as send_photon_text
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def register_user(
         "weekly_cap": weekly_cap,
         "savings_goal": savings_goal,
     }
-    logger.info("scheduler: registered user %s phone=%s", user_id, phone)
+    logger.info("scheduler: registered user %s", user_id)
 
 
 async def _all_active_users() -> list[dict]:
@@ -176,11 +176,7 @@ async def _safe_to_spend(user: dict) -> float:
 async def send_morning_brief(user: dict) -> None:
     """Build and send the 7 am brief for one user."""
     user_id = user["user_id"]
-    phone = user.get("phone", "")
     tz = user.get("tz", "America/Phoenix")
-
-    if not phone:
-        return
 
     if await _brief_sent_today(user_id, tz):
         logger.debug("brief already sent today for %s", user_id)
@@ -213,7 +209,10 @@ async def send_morning_brief(user: dict) -> None:
     lines.append("\nReply with a letter to get details, or 'plan my week' to schedule.")
 
     text = "\n".join(lines)
-    await send_message(phone, text, idempotency_key=f"brief:{user_id}:{datetime.now(ZoneInfo(tz)).date()}")
+    await send_photon_text(
+        user_id, text,
+        idempotency_key=f"brief:{user_id}:{datetime.now(ZoneInfo(tz)).date()}",
+    )
     await _record_brief(user_id, letters)
     logger.info("morning brief sent to %s (%s items)", user_id, len(top))
 
@@ -241,11 +240,7 @@ async def run_morning_briefs() -> None:
 async def send_evening_nudge(user: dict) -> None:
     """Send up to 3 nudge items for one user."""
     user_id = user["user_id"]
-    phone = user.get("phone", "")
     tz = user.get("tz", "America/Phoenix")
-
-    if not phone:
-        return
 
     items = _fake_items() if FAKE else _fake_items()
     # Only open items with upcoming deadlines
@@ -281,7 +276,7 @@ async def send_evening_nudge(user: dict) -> None:
     lines.append("\nReply 1/2/3 for details or 'plan my week' to schedule.")
 
     text = "\n".join(lines)
-    await send_message(phone, text, idempotency_key=f"nudge:{user_id}:{today}")
+    await send_photon_text(user_id, text, idempotency_key=f"nudge:{user_id}:{today}")
     await _record_nudge(user_id, None, dedupe_key)
     logger.info("evening nudge sent to %s", user_id)
 

@@ -68,16 +68,16 @@ async def test_morning_brief_sends_and_dedupes(monkeypatch):
 
     sent_calls = []
 
-    async def fake_send(to, text, idempotency_key=None):
-        sent_calls.append((to, text))
+    async def fake_send(user_id, text, idempotency_key=None):
+        sent_calls.append((user_id, text))
         return {"ok": True}
 
-    monkeypatch.setattr("channels.scheduler.send_message", fake_send)
+    monkeypatch.setattr("channels.scheduler.send_photon_text", fake_send)
 
     # First call sends
     await send_morning_brief(user)
     assert len(sent_calls) == 1
-    assert "+16027510003" in sent_calls[0][0]
+    assert sent_calls[0][0] == "u3"
     text = sent_calls[0][1]
     assert "A." in text
     assert "Safe to spend" in text
@@ -93,7 +93,7 @@ async def test_morning_brief_letters_recorded(monkeypatch):
     user = _user(user_id="u4", phone="+16027510004")
     _users["u4"] = user
 
-    monkeypatch.setattr("channels.scheduler.send_message", AsyncMock(return_value={"ok": True}))
+    monkeypatch.setattr("channels.scheduler.send_photon_text", AsyncMock(return_value={"ok": True}))
     await send_morning_brief(user)
 
     assert len(_briefs) == 1
@@ -109,7 +109,7 @@ async def test_evening_nudge_sends_and_dedupes(monkeypatch):
     _users["u5"] = user
 
     sent = []
-    monkeypatch.setattr("channels.scheduler.send_message", AsyncMock(side_effect=lambda to, text, **kw: sent.append(text) or {"ok": True}))
+    monkeypatch.setattr("channels.scheduler.send_photon_text", AsyncMock(side_effect=lambda user_id, text, **kw: sent.append(text) or {"ok": True}))
 
     await send_evening_nudge(user)
     assert len(sent) == 1
@@ -124,7 +124,7 @@ async def test_evening_nudge_sends_and_dedupes(monkeypatch):
 @pytest.mark.asyncio
 async def test_run_morning_briefs_no_users(monkeypatch):
     _clear()
-    monkeypatch.setattr("channels.scheduler.send_message", AsyncMock())
+    monkeypatch.setattr("channels.scheduler.send_photon_text", AsyncMock())
     # Should not raise even with zero users
     await run_morning_briefs()
 
@@ -138,8 +138,8 @@ async def test_run_evening_nudges_multiple_users(monkeypatch):
 
     sent = []
     monkeypatch.setattr(
-        "channels.scheduler.send_message",
-        AsyncMock(side_effect=lambda to, text, **kw: sent.append(to) or {"ok": True}),
+        "channels.scheduler.send_photon_text",
+        AsyncMock(side_effect=lambda user_id, text, **kw: sent.append(user_id) or {"ok": True}),
     )
     await run_evening_nudges()
     assert len(sent) == 3

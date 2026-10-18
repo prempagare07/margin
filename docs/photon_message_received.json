@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Photon message.received event",
+  "type": "object",
+  "required": ["id", "apiVersion", "type", "data"],
+  "properties": {
+    "id": {"type": "string"},
+    "apiVersion": {"type": "string"},
+    "type": {"const": "message.received"},
+    "data": {
+      "type": "object",
+      "required": ["object"],
+      "properties": {
+        "object": {
+          "type": "object",
+          "required": ["id", "content", "sentBy", "space"],
+          "properties": {
+            "id": {"type": "string"},
+            "content": {
+              "type": "object",
+              "required": ["type", "text"],
+              "properties": {
+                "type": {"const": "text"},
+                "format": {"type": "string"},
+                "text": {"type": "string"}
+              }
+            },
+            "sentBy": {
+              "type": "object",
+              "required": ["id", "handle", "kind"],
+              "properties": {
+                "id": {"type": "string"},
+                "handle": {"type": "string"},
+                "kind": {"type": "string"}
+              }
+            },
+            "addressedTo": {
+              "type": ["object", "null"],
+              "properties": {"id": {"type": "string"}}
+            },
+            "space": {
+              "type": "object",
+              "required": ["id", "kind", "participantIds"],
+              "properties": {
+                "id": {"type": "string"},
+                "kind": {"type": "string"},
+                "participantIds": {"type": "array", "items": {"type": "string"}}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

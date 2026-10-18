@@ -38,14 +38,44 @@ msg = priorities_carousel(items, tz="America/Phoenix")
 await ctx.send(sender, msg)
 ```
 
-### `channels.photon.send_text(user_id: str, body: str) -> None`
+### `channels.photon.send_text(user_id: str, body: str, *, idempotency_key: str | None = None)`
 
-Send an iMessage/SMS to a verified user from Alex's Life agent (e.g., overspend nudge).
+Send an iMessage to a verified user from Alex's Life agent or scheduler. This
+works only after the user has sent Margin an iMessage and the inbound LINK flow
+has saved both Photon IDs. It returns `None` without making an HTTP request when
+there is no saved conversation. Photon shared lines cannot initiate the thread,
+and this integration is iMessage-only (not SMS). Pass a stable idempotency key
+for every scheduled send.
 
 ```python
 from channels.photon import send_text
-await send_text(user_id, "You've spent 70% of your weekly budget.")
+await send_text(user_id, "You've spent 70% of your weekly budget.", idempotency_key="budget:u1:2026-10-18")
 ```
+
+### Photon linking and webhook setup
+
+On an unverified Connect submission, Margin calls
+`ensure_line_assignment(phone)` and shows the returned assigned line. The user
+must send `LINK XXXXXX` as an iMessage from that same submitted phone within ten
+minutes. A signed `message.received` webhook consumes the code, saves the
+message's `space.id` as `photon_space_id`, saves the agent user ID as
+`photon_user_id`, and sets `text_opted_in_at`. Replies stay in that space and
+use the inbound message as `parentMessageId`; their idempotency keys derive
+from its message ID.
+
+Configure the destination from the repository root:
+
+```sh
+python3 scripts/photon_setup.py --dry-run
+python3 scripts/photon_setup.py
+# If the same URL already exists and its one-time secret is unavailable:
+python3 scripts/photon_setup.py --rotate
+```
+
+The script requires `PHOTON_API_KEY`, `PHOTON_PROJECT_ID`, and an HTTPS
+`PUBLIC_BASE_URL`. It discovers the selectable API version and inbound event,
+writes the provider schema to `docs/photon_message_received.json`, writes the
+one-time signing secret to `.env` without printing it, and sets `.env` mode 600.
 
 ---
 
@@ -415,7 +445,9 @@ Alex's schema is the source of truth. Key changes Prem's code must handle:
 - `db/repo.py` is implemented and has local PostgreSQL integration tests. The existing Tiger Data schema is unchanged.
 - Prem must consume the updated protocol and database interface in the orchestrator, approval flow, and scheduler. This file records Alex's handoff; it does not claim Prem's runtime is already updated.
 - Step 1 verified read access through Composio for Gmail, Calendar, and Slack. Canvas iCal and the ASU campus-events calendar feed also parsed successfully. Credential presence alone is not a connection check for other providers.
-- Stripe, Photon webhook verification, and deployment readiness belong to later setup and implementation checks.
+- Photon webhook verification and conversation routing are implemented. A live
+  setup and delivery check still requires a key authorized for webhook metadata
+  plus the deployed HTTPS `PUBLIC_BASE_URL`.
 
 ## Plaid transaction integration
 
