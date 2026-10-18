@@ -40,3 +40,7 @@ class ActionRequest(Model):
     params: dict
 class ActionResult(Model):
     action_id: str
+    ok: bool
+    link: Optional[str] = None
+    data: Optional[dict] = None # fetch_source returns the original here
+    error: Optional[str] = None
