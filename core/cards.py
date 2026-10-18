@@ -304,6 +304,39 @@ def upgrade_card() -> ChatMessage:
     return card_message("custom", payload, "Choose a plan:")
 
 
+def pending_connect_card(app_name: str, remaining: list[str]) -> ChatMessage:
+    """Shown after user taps Connect, while they complete OAuth in the browser."""
+    steps_left = len(remaining)
+    after = f" ({steps_left} more app{'s' if steps_left != 1 else ''} after this)" if steps_left else " (last one!)"
+    payload = {
+        "root": {
+            "type": "section",
+            "title": f"Connecting {app_name}...",
+            "children": [
+                {"type": "text",
+                 "value": f"Complete the authorization in the browser tab, then come back and tap Done{after}.",
+                 "style": "muted"},
+                {
+                    "type": "button",
+                    "label": f"Done — {app_name} connected ✓",
+                    "primary": True,
+                    "action": {
+                        "selection": {"action": "check_next", "app": app_name, "remaining": remaining},
+                    },
+                },
+                {
+                    "type": "button",
+                    "label": "↩ Try connecting again",
+                    "action": {
+                        "selection": {"action": "connect_app", "app": app_name, "remaining": remaining},
+                    },
+                },
+            ],
+        }
+    }
+    return card_message("custom", payload)
+
+
 def app_connection_card(
     app_name: str,
     description: str,

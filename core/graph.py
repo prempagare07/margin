@@ -19,6 +19,7 @@ from core.cards import (
     connect_form,
     done as done_card,
     error_card,
+    pending_connect_card,
     priorities_carousel,
     review as review_card,
     upgrade_card,
@@ -736,6 +737,63 @@ async def upgrade_node(state: GraphState) -> dict:
     return {}
 
 
+_ONBOARDING_ORDER = ["Canvas", "Gmail", "Google Calendar", "Slack"]
+
+
+async def _get_onboarding_step(user_id: str) -> list[str]:
+    """Return ordered list of apps not yet connected for this user."""
+    from db import repo
+    from integrations import composio_tools
+
+    remaining: list[str] = []
+    try:
+        row = await repo.get_connection(user_id, "canvas")
+        if not (row and row.get("status") == "active"):
+            remaining.append("Canvas")
+    except Exception:
+        remaining.append("Canvas")
+
+    for provider, label in (("gmail", "Gmail"), ("gcal", "Google Calendar"), ("slack", "Slack")):
+        try:
+            st = await composio_tools.connection_status(user_id, provider)
+            if st.status != "active":
+                remaining.append(label)
+        except Exception:
+            remaining.append(label)
+
+    return remaining
+
+
+async def _check_single_app(user_id: str, app_name: str) -> bool:
+    """Return True if the named app is fully connected."""
+    from db import repo
+    from integrations import composio_tools
+
+    if app_name == "Canvas":
+        try:
+            row = await repo.get_connection(user_id, "canvas")
+            return bool(row and row.get("status") == "active")
+        except Exception:
+            return False
+
+    _prov = {"Gmail": "gmail", "Google Calendar": "gcal", "Slack": "slack"}
+    provider = _prov.get(app_name)
+    if not provider:
+        return False
+    try:
+        st = await composio_tools.connection_status(user_id, provider)
+        if st.status == "active":
+            if provider == "gcal" and not st.settings.get("calendar_ids"):
+                try:
+                    await composio_tools.auto_select_calendars(user_id)
+                except Exception:
+                    pass
+            return True
+        return False
+    except Exception:
+        return False
+
+
 async def _send_link_card(ctx: Any, sender: str, user_id: str) -> None:
     from core.cards import link_buttons
     from integrations import composio_tools
@@ -755,18 +813,31 @@ async def _send_link_card(ctx: Any, sender: str, user_id: str) -> None:
 
 
 async def connect_node(state: GraphState) -> dict:
-    """Save onboarding once, then show the single app-link card."""
+    """Save onboarding once, then walk user through apps one at a time."""
     from core import onboarding
 
     ctx, sender = state["ctx"], state["sender"]
     if state["channel"] != "asi1" or not sender or sender != state["user_id"]:
         await send_text(ctx, sender, "Open Margin in ASI:One to save your account details and link your phone.")
         return {}
+
     selection = state.get("selection") or {}
+    user_id = state["user_id"]
+
+    # "Try again" for a specific app — regenerate its link and re-show card
+    if selection.get("action") == "connect_app" and "app" in selection:
+        app = selection["app"]
+        remaining = list(selection.get("remaining") or [])
+        logger.info("connect: regenerating link for app=%s", app)
+        await _send_next_app_card(ctx, sender, user_id, [app] + remaining)
+        return {}
+
+    # "Get started" click — show setup form
     if set(selection) <= {"action"}:
-        # User clicked "Get started" from welcome card — show the setup form
         await ctx.send(sender, connect_form())
         return {}
+
+    # Form submitted — save and advance
     try:
         result = await onboarding.save(sender, selection)
     except onboarding.InvalidSubmission as exc:
@@ -774,12 +845,12 @@ async def connect_node(state: GraphState) -> dict:
         await ctx.send(sender, connect_form())
         return {}
     except Exception:
-        # Form values and database errors may include phone/budget details.
         logger.warning("connect: account persistence failed")
         await send_text(ctx, sender, "Your account details could not be saved. Please try the Connect form again.")
         return {}
+
     if result.phone_verified:
-        phone_msg = "Your account and budget are saved. Your phone is already linked — you'll get the 7 AM brief by text."
+        phone_msg = "Account saved ✓ Your phone is already linked — you'll get the 7 AM brief by text."
     else:
         try:
             from integrations.photon_client import ensure_line_assignment
@@ -788,74 +859,67 @@ async def connect_node(state: GraphState) -> dict:
         except Exception:
             logger.warning("connect: Photon line assignment unavailable")
             phone_msg = (
-                "Your account and budget are saved, but iMessage linking isn't available right now. "
-                "Please try the Connect form again shortly."
+                "Account saved! iMessage linking isn't available right now — "
+                "you can reconnect your phone later from settings."
             )
         else:
             phone_msg = (
-                "Account saved! From the same phone you entered, send this as an iMessage "
-                f"to {assigned_number} within 10 minutes:\n\nLINK {result.link_code}\n\n"
-                "Once received, Margin will confirm and turn on daily briefs and nudges."
+                "Account saved ✓\n\n"
+                "To link your phone, send this iMessage to "
+                f"{assigned_number} within 10 minutes:\n\nLINK {result.link_code}\n\n"
+                "Once received, Margin will confirm and turn on your 7 AM briefs."
             )
     await send_text(ctx, sender, phone_msg)
 
-    # Show all app connection links — give ASI:One a moment between messages
-    import asyncio as _aio
-    await _aio.sleep(0.5)
-    await _send_app_links_card(ctx, sender, state["user_id"])
+    # Step through apps sequentially — show the first one not yet connected
+    await asyncio.sleep(0.6)
+    remaining = await _get_onboarding_step(user_id)
+    if remaining:
+        await send_text(ctx, sender,
+            f"Now let's connect your apps — {len(remaining)} to go. "
+            "You can skip any and add them later.")
+        await asyncio.sleep(0.3)
+    await _send_next_app_card(ctx, sender, user_id, remaining)
     return {}
 
 
 async def check_links_node(state: GraphState) -> dict:
-    from integrations import composio_tools
+    """Verify connection status and advance the sequential onboarding flow."""
+    ctx, sender, user_id = state["ctx"], state["sender"], state["user_id"]
+    sel = state.get("selection") or {}
+    app = sel.get("app", "")
+    remaining = list(sel.get("remaining") or [])
 
-    _prov_label = {"gmail": "Gmail", "gcal": "Google Calendar", "slack": "Slack"}
-    connected: set[str] = set()
-    needs_connect: list[str] = []
-
-    # Also check Canvas (DB-only, no Composio)
-    try:
-        from db import repo
-        canvas_row = await repo.get_connection(state["user_id"], "canvas")
-        if canvas_row and canvas_row.get("status") == "active":
-            connected.add("Canvas")
+    # Sequential check: user tapped "Done — <App> connected ✓"
+    if app:
+        logger.info("check_links: verifying app=%s remaining=%s", app, remaining)
+        ok = await _check_single_app(user_id, app)
+        if ok:
+            await send_text(ctx, sender, f"{app} connected ✓")
+            await asyncio.sleep(0.4)
+            await _send_next_app_card(ctx, sender, user_id, remaining)
         else:
-            needs_connect.append("Canvas")
-    except Exception:
-        logger.warning("check_links: canvas db unavailable")
-        needs_connect.append("Canvas")
+            await send_text(ctx, sender,
+                f"Hmm, {app} doesn't seem to be connected yet. "
+                "Make sure you completed the authorization in the browser, then tap Done again.")
+            await asyncio.sleep(0.3)
+            await ctx.send(sender, pending_connect_card(app, remaining))
+        return {}
 
-    for provider in ("gmail", "gcal", "slack"):
-        label = _prov_label[provider]
-        try:
-            status = await composio_tools.connection_status(state["user_id"], provider)
-            logger.info("check_links: provider=%s status=%s", provider, status.status)
-            if status.status == "active":
-                if provider == "gcal" and not status.settings.get("calendar_ids"):
-                    await composio_tools.auto_select_calendars(state["user_id"])
-                connected.add(label)
-            elif status.status == "relink_required":
-                needs_connect.append(label)
-            else:
-                needs_connect.append(label)
-        except Exception as exc:
-            code = getattr(exc, "code", "STATUS_UNAVAILABLE")
-            logger.warning("check_links: provider=%s code=%s", provider, code)
-            needs_connect.append(label)
+    # Legacy "I've connected everything" — check all apps and report
+    remaining_all = await _get_onboarding_step(user_id)
+    connected_names = [a for a in _ONBOARDING_ORDER if a not in remaining_all]
 
-    if connected:
-        names = ", ".join(sorted(connected))
-        await send_text(state["ctx"], state["sender"], f"Connected: {names} ✓")
+    if connected_names:
+        await send_text(ctx, sender, "Connected: " + ", ".join(connected_names) + " ✓")
 
-    if not needs_connect:
-        await send_text(state["ctx"], state["sender"],
+    if not remaining_all:
+        await send_text(ctx, sender,
             "All apps connected! Say 'plan my week' to get started.")
         return {}
 
-    # Show updated card with connected apps dimmed
     await asyncio.sleep(0.4)
-    await _send_app_links_card(state["ctx"], state["sender"], state["user_id"],
-                               connected_apps=connected)
+    await _send_next_app_card(ctx, sender, user_id, remaining_all)
     return {}
 
 
@@ -946,7 +1010,7 @@ async def _send_app_links_card(ctx, sender: str, user_id: str,
 
 
 async def _send_next_app_card(ctx, sender: str, user_id: str, apps: list[str]) -> None:
-    """Show a connect card for the first app in the list, or 'you're set' if empty."""
+    """Show a sequential connect card for the first app in the list."""
     if not apps:
         await send_text(ctx, sender,
             "You're all set! Say 'plan my week' to block time for your assignments, "
@@ -966,7 +1030,7 @@ async def _send_next_app_card(ctx, sender: str, user_id: str, apps: list[str]) -
             logger.warning("app_card: canvas url failed: %s", exc)
             url = f"{base}/connect/canvas"
     else:
-        _composio_id = {"Gmail": "gmail", "Google Calendar": "googlecalendar", "Slack": "slack"}
+        _composio_id = {"Gmail": "gmail", "Google Calendar": "gcal", "Slack": "slack"}
         cid = _composio_id.get(app_name)
         if cid:
             try:
@@ -976,46 +1040,76 @@ async def _send_next_app_card(ctx, sender: str, user_id: str, apps: list[str]) -
                 logger.warning("app_card: composio link failed app=%s: %s", app_name, exc)
 
     desc = _APP_DESCRIPTIONS.get(app_name, "")
-    logger.info("app_card: sending %s card to %s url=%s remaining=%s", app_name, sender[:20], bool(url), remaining)
+    step_num = _ONBOARDING_ORDER.index(app_name) + 1 if app_name in _ONBOARDING_ORDER else 1
+    total = step_num + len(remaining)
+    logger.info("app_card: %s (%d/%d) url=%s", app_name, step_num, total, bool(url))
     try:
         await ctx.send(sender, app_connection_card(app_name, desc, url, remaining))
     except Exception as exc:
         logger.error("app_card: ctx.send failed for %s: %s", app_name, exc)
-        await send_text(ctx, sender, f"Next: connect {app_name} at {url or base + '/connect/canvas'}")
+        if url:
+            await send_text(ctx, sender, f"Connect {app_name}: {url}")
+        else:
+            await send_text(ctx, sender,
+                f"Couldn't generate the {app_name} connection link right now. "
+                "Try tapping 'I've connected everything' to continue.")
 
 
 async def chat_node(state: GraphState) -> dict:
     ctx = state["ctx"]
     sender = state["sender"]
+    user_id = state["user_id"]
     channel = state["channel"]
     text = state["text"].lower().strip()
-    logger.info("chat: intent=%s", state.get("intent"))
+    intent = state.get("intent", "chat")
+    sel = state.get("selection") or {}
+    logger.info("chat: intent=%s", intent)
 
-    # App linked → DO NOT regenerate OAuth links here (that would overwrite
-    # the pending_account_id in DB, orphaning the just-started OAuth flow).
-    # Just tell user to complete the browser tab, then hit "I've connected everything".
-    if state.get("intent") == "linked":
-        sel = state.get("selection") or {}
+    # User clicked a "Connect <App>" button → browser opens for OAuth.
+    # Show a pending card with "Done" + "Try again" buttons. Do NOT regenerate
+    # OAuth links here — that would overwrite pending_account_id in DB.
+    if intent == "linked":
         app = sel.get("app", "")
+        remaining = list(sel.get("remaining") or [])
         if app:
-            await send_text(ctx, sender,
-                f"Complete the {app} authorization in the browser tab that just opened. "
-                f"Then tap \"I've connected everything\" below when done.")
+            await ctx.send(sender, pending_connect_card(app, remaining))
         return {}
 
-    if state.get("intent") in ("skip_app", "check_links"):
-        sel = state.get("selection") or {}
+    # User tapped "Skip for now" on an app card
+    if intent == "skip_app":
         app = sel.get("app", "")
-        if app and state.get("intent") == "skip_app":
-            await send_text(ctx, sender, f"Skipped {app}.")
-        await _send_app_links_card(ctx, sender, state["user_id"])
+        remaining = list(sel.get("remaining") or [])
+        if app:
+            await send_text(ctx, sender, f"Skipped {app} — you can connect it anytime later.")
+        await asyncio.sleep(0.3)
+        await _send_next_app_card(ctx, sender, user_id, remaining)
         return {}
 
-    # Greetings → welcome carousel then connect form (ASI:One) or prompt (Photon)
+    # Greetings — resume from wherever the user left off in onboarding
     greetings = {"hi", "hello", "hey", "start", "help", "get started", "setup", "set up"}
     if text in greetings or text == "":
         if channel == "asi1":
+            try:
+                from db import repo
+                user = await repo.get_user(user_id)
+                if user:
+                    # User exists — find where they are in onboarding
+                    remaining = await _get_onboarding_step(user_id)
+                    if remaining:
+                        await send_text(ctx, sender,
+                            f"Welcome back! Still need to connect: {', '.join(remaining)}.")
+                        await asyncio.sleep(0.3)
+                        await _send_next_app_card(ctx, sender, user_id, remaining)
+                    else:
+                        await send_text(ctx, sender,
+                            "You're all set! Say 'plan my week' to get started, "
+                            "or ask me anything about your schedule.")
+                    return {}
+            except Exception as exc:
+                logger.warning("chat: user lookup failed: %s", exc)
+            # New user — show welcome + form
             await ctx.send(sender, welcome_card())
+            await asyncio.sleep(0.3)
             await ctx.send(sender, connect_form())
         else:
             await send_text(ctx, sender,
@@ -1034,7 +1128,7 @@ async def chat_node(state: GraphState) -> dict:
                         "If they want to plan their week, say: just type 'plan my week'."
                     ),
                 },
-                {"role": "user", "content": text},
+                {"role": "user", "content": state["text"]},
             ],
             timeout=15,
         )
@@ -1052,7 +1146,9 @@ async def chat_node(state: GraphState) -> dict:
 def _route(state: GraphState) -> str:
     routes: dict[str, str] = {
         "connect":     "connect",
+        "connect_app": "connect",    # regenerate link for a specific app
         "check_links": "check_links",
+        "check_next":  "check_links",  # verify one app then advance
         "linked":      "chat",
         "skip_app":    "chat",
         "plan_week":  "gather",
