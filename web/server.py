@@ -143,39 +143,35 @@ async def payments_complete(
 # Shared completion page
 # ---------------------------------------------------------------------------
 
-_CONNECTED_HTML = """<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Connected — Margin</title>
-<style>
-  body{{font-family:-apple-system,BlinkMacSystemFont,’Segoe UI’,sans-serif;
-        background:#0f0f0f;color:#e8e8e8;display:flex;align-items:center;
-        justify-content:center;min-height:100vh;margin:0;text-align:center;padding:24px;}}
-  .card{{background:#1a1a1a;border-radius:16px;padding:40px 32px;max-width:400px;width:100%;}}
-  .check{{font-size:56px;margin-bottom:16px;}}
-  h2{{margin:0 0 12px;font-size:22px;font-weight:600;}}
-  p{{margin:0;color:#aaa;font-size:15px;line-height:1.5;}}
-  .app{{display:inline-block;background:#2a2a2a;border-radius:8px;padding:4px 12px;
-        margin-top:16px;font-size:13px;color:#7dd87d;font-weight:500;}}
-</style>
-</head>
-<body>
-<div class="card">
-  <div class="check">✅</div>
-  <h2>{app} Connected!</h2>
-  <p>Your account is linked. Return to <strong>ASI:One</strong> and tap<br>
-  <em>"I’ve connected everything"</em> to continue.</p>
-  <div class="app">{app} ✓</div>
-</div>
-</body>
-</html>"""
+_CONNECTED_HTML = (
+    "<!DOCTYPE html><html><head>"
+    "<meta charset='utf-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>Connected - Margin</title>"
+    "<style>"
+    "body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;"
+    "background:#0f0f0f;color:#e8e8e8;display:flex;align-items:center;"
+    "justify-content:center;min-height:100vh;margin:0;text-align:center;padding:24px}"
+    ".card{background:#1a1a1a;border-radius:16px;padding:40px 32px;max-width:400px;width:100%}"
+    ".check{font-size:56px;margin-bottom:16px}"
+    "h2{margin:0 0 12px;font-size:22px;font-weight:600}"
+    "p{margin:0;color:#aaa;font-size:15px;line-height:1.5}"
+    ".badge{display:inline-block;background:#2a2a2a;border-radius:8px;padding:4px 12px;"
+    "margin-top:16px;font-size:13px;color:#7dd87d;font-weight:500}"
+    "</style></head><body>"
+    "<div class='card'>"
+    "<div class='check'>&#x2705;</div>"
+    "<h2>{app} Connected!</h2>"
+    "<p>Your account is linked. Return to <b>ASI:One</b> and tap "
+    "<i>I've connected everything</i> to continue.</p>"
+    "<div class='badge'>{app} &#x2713;</div>"
+    "</div></body></html>"
+)
 
 
 @app.get("/connected", response_class=HTMLResponse)
 async def connected(app: str = "App") -> HTMLResponse:
-    safe_app = app[:32].replace("<", "").replace(">", "").replace("&", "").replace(‘"’, "")
-    if not safe_app:
-        safe_app = "App"
-    return HTMLResponse(_CONNECTED_HTML.format(app=safe_app))
+    safe = app[:32].replace("&", "").replace("<", "").replace(">", "").replace('"', "").strip()
+    if not safe:
+        safe = "App"
+    return HTMLResponse(_CONNECTED_HTML.format(app=safe))
