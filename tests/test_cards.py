@@ -86,6 +86,8 @@ def test_connect_form_fields():
     names = [f["name"] for f in p["fields"]]
     assert "phone" in names
     assert "monthly_income" in names
+    assert "bills" in names
+    assert p["submit_cta"]["selection"] == {"action": "connect"}
 
 
 def test_priorities_carousel_max_5():

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 from uuid import uuid4
@@ -56,6 +57,23 @@ def make_chat_protocol(
                 await ctx.send(sender, send_text_msg(greeting))
             return
 
+        # Form clients may send selection/values as metadata instead of text.
+        # Never treat an outgoing card_payload as an inbound selection.
+        for item in msg.content:
+            if isinstance(item, MetadataContent):
+                raw = item.metadata.get("selection") or item.metadata.get("card_selection")
+                if raw:
+                    selection = await parse_selection(raw)
+                    if selection:
+                        for key in ("values", "form_data", "fields"):
+                            if key in item.metadata:
+                                try:
+                                    selection[key] = json.loads(item.metadata[key])
+                                except (TypeError, ValueError):
+                                    selection[key] = None  # validation will reject it
+                        await on_text(ctx, sender, "", selection)
+                        return
+
         for item in msg.content:
             if isinstance(item, TextContent):
                 text = (item.text or "").strip()
@@ -87,7 +105,7 @@ async def parse_selection(text: str) -> dict | None:
     """
     if not text:
         return None
-    stripped = text.strip()
+    stripped = re.sub(r"^(?:@\S+\s+)+", "", text.strip())
 
     # Direct JSON from @mention
     if stripped.startswith("{"):
@@ -95,8 +113,16 @@ async def parse_selection(text: str) -> dict | None:
             data = json.loads(stripped)
             if isinstance(data, dict) and "action" in data:
                 return data
+            if isinstance(data, dict) and isinstance(data.get("selection"), dict) and "action" in data["selection"]:
+                return {**{k: v for k, v in data.items() if k != "selection"}, **data["selection"]}
         except json.JSONDecodeError:
             pass
+
+    # Never send phone/budget fields to a model or infer financial values from prose.
+    if stripped.lower() == "connect":
+        return {"action": "connect"}
+    if re.search(r'\b(monthly_income|weekly_cap|savings_goal)\b|["\']?(phone|bills)["\']?\s*[:=]', stripped, re.I):
+        return {"action": "connect", "_invalid": True}
 
     # Only call fast() if the text looks like a card selection
     card_keywords = (

@@ -19,6 +19,12 @@ from channels.scheduler import (
 )
 
 
+@pytest.fixture(autouse=True)
+def in_memory_scheduler(monkeypatch):
+    """Scheduler unit tests must never use the configured live database."""
+    monkeypatch.setattr("channels.scheduler._database_enabled", lambda: False)
+
+
 def _clear():
     _users.clear()
     _briefs.clear()

@@ -96,7 +96,9 @@ def _phone(value: str) -> str:
     return value
 
 
-async def _one(query: str, params: tuple = ()) -> dict | None:
+async def _one(query: str, params: tuple = (), *, conn=None) -> dict | None:
+    if conn is not None:
+        return await (await conn.execute(query, params)).fetchone()
     async with (await get_pool()).connection() as conn:
         return await (await conn.execute(query, params)).fetchone()
 
@@ -106,7 +108,7 @@ async def _all(query: str, params: tuple = ()) -> list[dict]:
         return await (await conn.execute(query, params)).fetchall()
 
 
-async def upsert_user(user_id: str, **kwargs) -> None:
+async def upsert_user(user_id: str, *, conn=None, **kwargs) -> None:
     """Update explicit profile fields; phone verification uses separate helpers."""
     if not user_id or kwargs.keys() - _USER_FIELDS:
         raise ValueError("Invalid user ID or unsupported profile fields")
@@ -115,18 +117,25 @@ async def upsert_user(user_id: str, **kwargs) -> None:
     for field in ("pro_until", "text_opted_in_at"):
         if kwargs.get(field) is not None:
             kwargs[field] = _datetime(kwargs[field])
-    fields = ["user_id", *kwargs]
-    conflict = sql.SQL("DO NOTHING")
-    if kwargs:
-        conflict = sql.SQL("DO UPDATE SET {} ").format(sql.SQL(", ").join(
-            sql.SQL("{0} = EXCLUDED.{0}").format(sql.Identifier(key)) for key in kwargs
-        ))
-    query = sql.SQL("INSERT INTO public.users ({}) VALUES ({}) ON CONFLICT (user_id) {}").format(
-        sql.SQL(", ").join(map(sql.Identifier, fields)),
-        sql.SQL(", ").join(sql.Placeholder() for _ in fields), conflict,
-    )
-    async with (await get_pool()).connection() as conn:
-        await conn.execute(query, (user_id, *kwargs.values()))
+    async def write(connection):
+        # Insert only the identity before applying profile fields. PostgreSQL
+        # checks a proposed INSERT before ON CONFLICT, so inserting an opt-in
+        # timestamp without the existing phone would otherwise fail its CHECK.
+        await connection.execute(
+            "INSERT INTO public.users (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING",
+            (user_id,),
+        )
+        if kwargs:
+            query = sql.SQL("UPDATE public.users SET {} WHERE user_id = %s").format(
+                sql.SQL(", ").join(sql.SQL("{} = %s").format(sql.Identifier(key)) for key in kwargs)
+            )
+            await connection.execute(query, (*kwargs.values(), user_id))
+
+    if conn is not None:
+        await write(conn)
+    else:
+        async with (await get_pool()).connection() as connection:
+            await write(connection)
 
 
 async def get_user(user_id: str) -> dict | None:
@@ -139,14 +148,26 @@ async def get_user_by_phone(phone: str) -> dict | None:
     )
 
 
-async def set_phone(user_id: str, phone: str, code_hash: str, expires: datetime) -> None:
+async def list_active_text_users() -> list[dict]:
+    """Return verified, opted-in users with optional budget settings."""
+    return await _all(
+        """SELECT u.user_id, u.phone, u.tz, b.monthly_income,
+                  b.weekly_cap, b.savings_goal
+           FROM public.users u
+           LEFT JOIN public.budgets b USING (user_id)
+           WHERE u.phone_verified AND u.text_opted_in_at IS NOT NULL
+           ORDER BY u.user_id"""
+    )
+
+
+async def set_phone(user_id: str, phone: str, code_hash: str, expires: datetime, *, conn=None) -> None:
     if not code_hash:
         raise ValueError("A verification code hash is required")
     row = await _one(
         """UPDATE public.users SET phone = %s, phone_verified = false,
                text_opted_in_at = NULL, phone_code_hash = %s, phone_code_expires_at = %s
            WHERE user_id = %s RETURNING user_id""",
-        (_phone(phone), code_hash, _datetime(expires), user_id),
+        (_phone(phone), code_hash, _datetime(expires), user_id), conn=conn,
     )
     if row is None:
         raise LookupError("User not found")
@@ -166,6 +187,60 @@ async def verify_phone(user_id: str, code_hash: str) -> bool:
                  AND phone_code_expires_at > now() RETURNING user_id""", (user_id, code_hash),
         )
         return await cur.fetchone() is not None
+
+
+async def save_onboarding(
+    user_id: str, *, phone: str, monthly_income: Decimal, savings_goal: Decimal,
+    weekly_cap: Decimal | None, bills: list[dict], code_hash: str, expires: datetime,
+) -> bool:
+    """Save one validated Connect submission atomically; return phone_verified.
+
+    Bills are upserted by name; omitted bills are preserved. A repeated submit
+    never revokes an already verified, unchanged number or modifies entitlements.
+    """
+    _phone(phone)
+    async with (await get_pool()).connection() as conn:
+        await upsert_user(user_id, conn=conn)
+        user = await _one("SELECT * FROM public.users WHERE user_id = %s FOR UPDATE", (user_id,), conn=conn)
+        await save_budget(user_id, monthly_income, savings_goal, weekly_cap, conn=conn)
+        for bill in bills:
+            await save_bill(user_id, bill["name"], bill["amount"], bill["due_day"], conn=conn)
+        verified = user["phone"] == phone and user["phone_verified"]
+        if not verified:
+            await set_phone(user_id, phone, code_hash, expires, conn=conn)
+        return bool(verified)
+
+
+async def verify_phone_link(phone: str, code_hash: str) -> str | None:
+    """Consume a possession challenge from a signed inbound Photon message.
+
+    The sender phone must equal the submitted number. No caller-supplied user ID
+    participates in this lookup. Verifying does not opt the user into reminders.
+    """
+    from psycopg.errors import UniqueViolation
+
+    _phone(phone)
+    if not re.fullmatch(r"[a-f0-9]{64}", code_hash):
+        return None
+    try:
+        async with (await get_pool()).connection() as conn:
+            rows = await (await conn.execute(
+                """SELECT user_id FROM public.users
+                   WHERE phone = %s AND phone_code_hash = %s AND NOT phone_verified
+                     AND phone_code_expires_at > now() FOR UPDATE""", (phone, code_hash),
+            )).fetchall()
+            if len(rows) != 1:
+                return None
+            user_id = rows[0]["user_id"]
+            await conn.execute(
+                """UPDATE public.users SET phone_verified = true,
+                   phone_code_hash = NULL, phone_code_expires_at = NULL
+                   WHERE user_id = %s""", (user_id,),
+            )
+            return user_id
+    except UniqueViolation:
+        # Another user already owns this verified number. Never steal a link.
+        return None
 
 
 def _cipher() -> Fernet:
@@ -537,6 +612,16 @@ async def get_pending_nudge(user_id: str) -> dict | None:
     )
 
 
+async def nudge_was_sent(user_id: str, dedupe_key: str) -> bool:
+    """Return whether this user's idempotent nudge has already been sent."""
+    return await _one(
+        """SELECT nudge_id FROM public.nudges
+           WHERE user_id = %s AND dedupe_key = %s AND sent_at IS NOT NULL
+           LIMIT 1""",
+        (user_id, dedupe_key),
+    ) is not None
+
+
 async def update_nudge(nudge_id: str, user_id: str, reply: str, action_taken: str) -> None:
     async with (await get_pool()).connection() as conn:
         row = await (await conn.execute(
@@ -560,13 +645,13 @@ async def get_budget(user_id: str) -> dict | None:
     return await _one("SELECT * FROM public.budgets WHERE user_id = %s", (user_id,))
 
 
-async def save_budget(user_id: str, monthly_income: float, savings_goal: float, weekly_cap: float | None) -> None:
+async def save_budget(user_id: str, monthly_income: float, savings_goal: float, weekly_cap: float | None, *, conn=None) -> None:
     await _one(
         """INSERT INTO public.budgets (user_id, monthly_income, savings_goal, weekly_cap)
            VALUES (%s, %s, %s, %s) ON CONFLICT (user_id) DO UPDATE SET
              monthly_income = EXCLUDED.monthly_income, savings_goal = EXCLUDED.savings_goal,
              weekly_cap = EXCLUDED.weekly_cap RETURNING user_id""",
-        (user_id, _money(monthly_income), _money(savings_goal), _money(weekly_cap) if weekly_cap is not None else None),
+        (user_id, _money(monthly_income), _money(savings_goal), _money(weekly_cap) if weekly_cap is not None else None), conn=conn,
     )
 
 
@@ -574,13 +659,13 @@ async def get_bills(user_id: str) -> list[dict]:
     return await _all("SELECT * FROM public.bills WHERE user_id = %s ORDER BY due_day, name", (user_id,))
 
 
-async def save_bill(user_id: str, name: str, amount: float, due_day: int) -> None:
+async def save_bill(user_id: str, name: str, amount: float, due_day: int, *, conn=None) -> None:
     if not name.strip() or isinstance(due_day, bool) or not isinstance(due_day, int) or not 1 <= due_day <= 31:
         raise ValueError("Bills require a name and due_day between 1 and 31")
     await _one(
         """INSERT INTO public.bills (user_id, name, amount, due_day) VALUES (%s, %s, %s, %s)
            ON CONFLICT (user_id, name) DO UPDATE SET amount = EXCLUDED.amount, due_day = EXCLUDED.due_day
-           RETURNING user_id""", (user_id, name, _money(amount), due_day),
+           RETURNING user_id""", (user_id, name, _money(amount), due_day), conn=conn,
     )
 
 

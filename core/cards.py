@@ -66,8 +66,9 @@ def connect_form() -> ChatMessage:
             {"name": "monthly_income", "kind": "number", "label": "Monthly income ($)",  "required": True},
             {"name": "weekly_cap",     "kind": "number", "label": "Weekly spending cap ($, optional)"},
             {"name": "savings_goal",   "kind": "number", "label": "Monthly savings goal ($, optional)"},
+            {"name": "bills", "kind": "text", "label": "Monthly bills (optional): Name | Amount | Due day; e.g. Rent | 850 | 1; Utilities | 70 | 15"},
         ],
-        "submit_cta": {"label": "Connect", "selection": {"action": "connect"}},
+        "submit_cta": {"label": "Save and link phone", "selection": {"action": "connect"}},
     }
     return card_message("form", payload, "Let's set up your Margin account.")
 

@@ -66,9 +66,12 @@ async def photon_webhook(request: Request) -> Response:
     """
     body = await request.body()
 
-    # Signature verification
+    # Sender phone possession is trusted only after signature verification.
     if _WEBHOOK_SECRET:
-        wh = Webhook(_WEBHOOK_SECRET)
+        try:
+            wh = Webhook(_WEBHOOK_SECRET)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=503, detail="Photon webhook verification is not configured") from None
         headers = {
             "webhook-id":        request.headers.get("webhook-id", ""),
             "webhook-timestamp": request.headers.get("webhook-timestamp", ""),
@@ -76,15 +79,16 @@ async def photon_webhook(request: Request) -> Response:
         }
         try:
             event = wh.verify(body, headers)
-        except WebhookVerificationError as exc:
-            logger.warning("photon_webhook: signature invalid: %s", exc)
+        except WebhookVerificationError:
+            logger.warning("photon_webhook: invalid signature")
             raise HTTPException(status_code=401, detail="Invalid signature")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Bad JSON") from None
     else:
-        import json as _json
-        try:
-            event = _json.loads(body)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Bad JSON")
+        raise HTTPException(status_code=503, detail="Photon webhook verification is not configured")
+
+    if not isinstance(event, dict):
+        raise HTTPException(status_code=400, detail="Bad event")
 
     # Only handle inbound messages
     event_type = event.get("type", "")
@@ -92,24 +96,26 @@ async def photon_webhook(request: Request) -> Response:
         return Response(status_code=200)
 
     data = event.get("data") or event.get("payload") or {}
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Bad event data")
     phone = data.get("from") or data.get("phone") or data.get("sender", "")
     text  = data.get("body") or data.get("text") or data.get("message", "")
 
-    if not phone or not text:
+    if not isinstance(phone, str) or not isinstance(text, str) or not phone or not text:
         logger.info("photon_webhook: missing phone or text — ignoring")
         return Response(status_code=200)
 
     # Dispatch async so we return 200 immediately
-    asyncio.create_task(_dispatch(phone, text))
+    asyncio.create_task(_dispatch(phone, text, verified_webhook=True))
     return Response(status_code=200)
 
 
-async def _dispatch(phone: str, text: str) -> None:
+async def _dispatch(phone: str, text: str, *, verified_webhook: bool = False) -> None:
     try:
         from channels.photon import handle_inbound
-        await handle_inbound(phone, text)
-    except Exception as exc:
-        logger.exception("photon dispatch error for %s: %s", phone, exc)
+        await handle_inbound(phone, text, verified_webhook=verified_webhook)
+    except Exception:
+        logger.warning("photon dispatch failed")
 
 
 # ---------------------------------------------------------------------------

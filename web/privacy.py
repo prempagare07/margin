@@ -22,4 +22,4 @@ def install_access_filter() -> None:
 
 def is_private_request(event: dict) -> bool:
     url = str((event.get("request") or {}).get("url", ""))
-    return "/connect/canvas" in url or "/feeds/calendars/" in url
+    return "/connect/canvas" in url or "/feeds/calendars/" in url or "/webhooks/photon" in url

@@ -591,6 +591,46 @@ async def upgrade_node(state: GraphState) -> dict:
     return {}
 
 
+async def connect_node(state: GraphState) -> dict:
+    from core import onboarding
+
+    ctx, sender = state["ctx"], state["sender"]
+    if state["channel"] != "asi1" or not sender or sender != state["user_id"]:
+        await send_text(ctx, sender, "Open Margin in ASI:One to save your account details and link your phone.")
+        return {}
+    selection = state.get("selection") or {}
+    if set(selection) <= {"action"}:
+        await ctx.send(sender, connect_form())
+        return {}
+    try:
+        result = await onboarding.save(sender, selection)
+    except onboarding.InvalidSubmission as exc:
+        await send_text(ctx, sender, str(exc))
+        await ctx.send(sender, connect_form())
+        return {}
+    except Exception:
+        # Form values and database errors may include phone/budget details.
+        logger.warning("connect: account persistence failed")
+        await send_text(ctx, sender, "Your account details could not be saved. Please try the Connect form again.")
+        return {}
+    if result.phone_verified:
+        await send_text(ctx, sender, "Your account and budget are saved. Your phone is already linked.")
+    else:
+        destination = "Margin's Photon number"
+        configured_number = os.getenv("PHOTON_SENDING_NUMBER", "")
+        if configured_number:
+            try:
+                destination = onboarding.phone_number(configured_number)
+            except onboarding.InvalidSubmission:
+                pass
+        await send_text(ctx, sender,
+            "Your account and budget are saved. To finish linking your phone, send the following "
+            f"message from that phone to {destination} within 10 minutes:\n\n"
+            f"LINK {result.link_code}\n\n"
+            "Your phone will be linked after Margin receives that message.")
+    return {}
+
+
 async def chat_node(state: GraphState) -> dict:
     import sentry_sdk
     ctx = state["ctx"]
@@ -606,7 +646,7 @@ async def chat_node(state: GraphState) -> dict:
             await ctx.send(sender, connect_form())
         else:
             await send_text(ctx, sender,
-                "Welcome to Margin! Reply with your phone number to get started.")
+                "Open Margin in ASI:One to complete the Connect form and link your phone.")
         return {}
 
     try:

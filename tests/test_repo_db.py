@@ -821,3 +821,119 @@ async def test_plaid_adapter_pages_persist_once_then_replay_modify_remove_and_up
     revised = repo._safe_to_spend(await repo.get_budget("alex"), [], 40, today)
     assert await repo.safe_to_spend("alex") == revised < expected
     assert cursors == [None, "c1", "c2", "c2"]
+
+
+def onboarding_form(**changes):
+    return dict({"action": "connect", "phone": "+14805551234", "monthly_income": "1800",
+                 "savings_goal": "100", "weekly_cap": "125", "bills": "Rent | 850 | 1; Utilities | 60 | 31"}, **changes)
+
+
+async def test_connect_graph_creates_user_budget_bills_and_plaid_eligible_identity(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from core import graph, onboarding
+    from uagents_core.contrib.protocols.chat import TextContent
+
+    monkeypatch.setattr(graph, "fast", AsyncMock(side_effect=AssertionError("No model for onboarding")))
+    ctx = SimpleNamespace(send=AsyncMock())
+    assert await repo.get_user("new-asi-sender") is None
+    await graph.handle(ctx, "new-asi-sender", "", "asi1",
+                       onboarding_form(user_id="other", plan="pro", phone_verified=True), "new-asi-sender")
+    user = await repo.get_user("new-asi-sender")
+    assert user["phone"] == "+14805551234" and not user["phone_verified"]
+    assert user["plan"] == "free" and user["text_opted_in_at"] is None
+    assert (await repo.get_budget("new-asi-sender"))["monthly_income"] == 1800
+    assert len(await repo.get_bills("new-asi-sender")) == 2
+    assert await repo.get_budget("other") is None
+    text = " ".join(c.text for call in ctx.send.await_args_list for c in call.args[1].content if isinstance(c, TextContent))
+    code = text.split("LINK ")[1].split()[0]
+    assert user["phone_code_hash"] == onboarding.link_code_hash(code)
+    assert code not in str(user) and user["phone_code_expires_at"] > datetime.now(timezone.utc)
+    # This identity now satisfies Plaid's existing-user requirement without any provider call.
+    saved = await plaid_store.initialize_connection("new-asi-sender", item_id="test-item", access_token="test-token")
+    assert saved["user_id"] == "new-asi-sender"
+
+
+async def test_connect_upserts_bills_and_preserves_verified_phone_entitlements_and_consent():
+    from core import onboarding
+    first = await onboarding.save("alex", onboarding_form())
+    assert await repo.verify_phone_link("+14805551234", onboarding.link_code_hash(first.link_code)) == "alex"
+    opted_in = datetime.now(timezone.utc)
+    await repo.upsert_user("alex", plan="pro", tz="America/New_York", text_opted_in_at=opted_in)
+    second = await onboarding.save("alex", onboarding_form(monthly_income="2200", bills="Rent | 900 | 2"))
+    assert second.phone_verified and second.link_code is None
+    user = await repo.get_user("alex")
+    assert user["phone_verified"] and user["phone_code_hash"] is None
+    assert user["plan"] == "pro" and user["tz"] == "America/New_York" and user["text_opted_in_at"] == opted_in
+    bills = {b["name"]: b for b in await repo.get_bills("alex")}
+    assert len(bills) == 2 and bills["Rent"]["amount"] == 900 and bills["Utilities"]["amount"] == 60
+    assert (await repo.get_budget("alex"))["monthly_income"] == 2200
+
+
+async def test_connect_rolls_back_user_budget_and_all_bills_on_late_failure():
+    with pytest.raises(ValueError):
+        await repo.save_onboarding("rollback-new", phone="+14805551234", monthly_income=Decimal(1000),
+            savings_goal=Decimal(0), weekly_cap=None,
+            bills=[{"name": "Rent", "amount": 300, "due_day": 1}, {"name": "Bad", "amount": 10, "due_day": 32}],
+            code_hash="a" * 64, expires=datetime.now(timezone.utc) + timedelta(minutes=10))
+    assert await repo.get_user("rollback-new") is None
+    assert await repo.get_budget("rollback-new") is None and await repo.get_bills("rollback-new") == []
+
+
+async def test_connect_new_phone_revokes_old_link_and_stale_challenge():
+    from core import onboarding
+    first = await onboarding.save("alex", onboarding_form())
+    second = await onboarding.save("alex", onboarding_form(phone="+14805551235"))
+    assert await repo.verify_phone_link("+14805551234", onboarding.link_code_hash(first.link_code)) is None
+    assert await repo.verify_phone_link("+14805551234", onboarding.link_code_hash(second.link_code)) is None
+    assert await repo.verify_phone_link("+14805551235", onboarding.link_code_hash(second.link_code)) == "alex"
+    await repo.upsert_user("alex", text_opted_in_at=datetime.now(timezone.utc))
+    await onboarding.save("alex", onboarding_form(phone="+14805551236"))
+    assert await repo.get_user_by_phone("+14805551235") is None
+    user = await repo.get_user("alex")
+    assert not user["phone_verified"] and user["text_opted_in_at"] is None
+
+
+async def test_phone_link_expires_and_is_consumed_once_under_concurrency():
+    from core import onboarding
+    first = await onboarding.save("alex", onboarding_form())
+    digest = onboarding.link_code_hash(first.link_code)
+    await repo.set_phone("alex", "+14805551234", digest, datetime.now(timezone.utc) - timedelta(seconds=1))
+    assert await repo.verify_phone_link("+14805551234", digest) is None
+    second = await onboarding.save("alex", onboarding_form())
+    digest = onboarding.link_code_hash(second.link_code)
+    assert await repo.verify_phone_link("+14805551234", "0" * 64) is None
+    results = await asyncio.gather(*(repo.verify_phone_link("+14805551234", digest) for _ in range(4)))
+    assert results.count("alex") == 1
+    user = await repo.get_user("alex")
+    assert user["phone_code_hash"] is None and user["phone_code_expires_at"] is None
+    assert user["text_opted_in_at"] is None
+    assert await repo.verify_phone_link("+14805551234", digest) is None
+
+
+async def test_phone_link_cannot_steal_number_from_another_verified_user():
+    from core import onboarding
+    first = await onboarding.save("alex", onboarding_form())
+    second = await onboarding.save("other", onboarding_form())
+    assert await repo.verify_phone_link("+14805551234", onboarding.link_code_hash(first.link_code)) == "alex"
+    assert await repo.verify_phone_link("+14805551234", onboarding.link_code_hash(second.link_code)) is None
+    assert (await repo.get_user_by_phone("+14805551234"))["user_id"] == "alex"
+    assert not (await repo.get_user("other"))["phone_verified"]
+
+
+async def test_onboarded_phone_is_blocked_until_link_then_routes_to_same_asi_identity(monkeypatch):
+    from unittest.mock import AsyncMock
+    from core import graph, onboarding
+    from channels import photon
+
+    result = await onboarding.save("alex", onboarding_form())
+    dispatch, send = AsyncMock(), AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(graph, "handle", dispatch)
+    monkeypatch.setattr(photon, "send_message", send)
+    await photon.handle_inbound("+14805551234", "hi", user_id="other", verified_webhook=True)
+    dispatch.assert_not_awaited()
+    await photon.handle_inbound("+14805551234", f"LINK {result.link_code}", verified_webhook=True)
+    assert "phone is linked" in send.await_args.args[1]
+    await photon.handle_inbound("+14805551234", "hi", user_id="other", verified_webhook=True)
+    assert dispatch.await_args.kwargs["user_id"] == "alex"
+    assert dispatch.await_args.kwargs["channel"] == "photon"

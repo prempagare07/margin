@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from uagents_core.contrib.protocols.chat import ChatMessage, MetadataContent, TextContent
@@ -119,28 +120,48 @@ class PhotonCtx:
 # Inbound dispatcher (called by web/server.py)
 # ---------------------------------------------------------------------------
 
-async def handle_inbound(phone: str, text: str, user_id: str | None = None) -> None:
+async def handle_inbound(
+    phone: str, text: str, user_id: str | None = None, *, verified_webhook: bool = False,
+) -> None:
     """Dispatch an inbound Photon message through the graph.
 
-    Only proceeds if the phone number is verified in the DB. This prevents
-    spoofed inbound SMS from accessing another user's data.
+    Requires verified webhook provenance, then resolves the verified phone owner.
+    A LINK challenge is the only command accepted before ownership is verified.
+    The legacy user_id argument is ignored; it cannot override DB ownership.
     """
     from core import graph
     from core.chat import parse_selection
+    from core.onboarding import InvalidSubmission, link_code_hash, phone_number
+    from db import repo
 
-    # Resolve user_id from verified phone — never trust caller-supplied uid
-    if user_id is None:
+    if not verified_webhook:
+        return
+    try:
+        phone = phone_number(phone)
+    except InvalidSubmission:
+        return
+    if not isinstance(text, str):
+        return
+    # Possession comes from the signed provider event's sender, not from JSON.
+    if re.match(r"^\s*LINK(?:\s|$)", text, re.I):
+        match = re.fullmatch(r"\s*LINK\s+([A-Za-z0-9_-]{32})\s*", text, re.I)
         try:
-            from db import repo
-            row = await repo.get_user_by_phone(phone)
-            uid = row["user_id"] if row else None
+            linked = await repo.verify_phone_link(phone, link_code_hash(match[1])) if match else None
         except Exception:
-            uid = None
-        if not uid:
-            logger.warning("photon: unverified phone %s — dropping message", phone)
+            logger.warning("photon: phone verification storage unavailable")
+            await send_message(phone, "Phone linking is temporarily unavailable. Please try again shortly.")
             return
-    else:
-        uid = user_id
+        await send_message(phone, "Your phone is linked to Margin. You can now ask me questions here." if linked else
+                           "That link code is invalid, expired, or unavailable for this number. Submit the Connect form in ASI:One for a new code.")
+        return
+    try:
+        row = await repo.get_user_by_phone(phone)
+        uid = row["user_id"] if row else None
+    except Exception:
+        uid = None
+    if not uid:
+        logger.warning("photon: unlinked sender — dropping message")
+        return
     selection = await parse_selection(text)
 
     ctx = PhotonCtx(phone)

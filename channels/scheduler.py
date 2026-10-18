@@ -1,7 +1,6 @@
 """7 am morning brief and 9 pm nudge sweep. Owner: Prem."""
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -11,8 +10,8 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from core import approval
 from core.graph import _fake_items, _fake_slots
+from db import repo
 from integrations.photon_client import send_message
 
 logger = logging.getLogger(__name__)
@@ -28,6 +27,11 @@ FAKE = os.environ.get("FAKE_SPECIALISTS", "0") == "1"
 _users: dict[str, dict] = {}   # user_id → {phone, tz, monthly_income, weekly_cap, savings_goal}
 _briefs: dict[str, dict] = {}  # brief_id → {user_id, letters, sent_at}
 _nudges: dict[str, dict] = {}  # dedupe_key → nudge dict
+
+
+def _database_enabled() -> bool:
+    """Avoid opening a database pool in local/test fallback mode."""
+    return bool(os.environ.get("DATABASE_URL")) and not FAKE
 
 
 def register_user(
@@ -55,18 +59,9 @@ async def _all_active_users() -> list[dict]:
 
     Tries DB first; falls back to in-memory registry.
     """
-    pool = await approval._get_pool()
-    if pool is not None and pool is not approval._UNAVAILABLE:
+    if _database_enabled():
         try:
-            async with pool.connection() as conn:
-                cur = await conn.execute(
-                    "SELECT u.user_id, u.phone, u.tz, b.monthly_income,"
-                    " b.weekly_cap, b.savings_goal"
-                    " FROM users u LEFT JOIN budgets b USING (user_id)"
-                    " WHERE u.phone_verified AND u.text_opted_in_at IS NOT NULL"
-                )
-                rows = await cur.fetchall()
-                return [dict(r) for r in rows]
+            return [dict(row) for row in await repo.list_active_text_users()]
         except Exception as exc:
             logger.warning("_all_active_users DB error: %s", exc)
 
@@ -76,18 +71,9 @@ async def _all_active_users() -> list[dict]:
 async def _brief_sent_today(user_id: str, tz: str) -> bool:
     """Return True if a brief was already sent to this user today (local time)."""
     local_today = datetime.now(ZoneInfo(tz)).date()
-    pool = await approval._get_pool()
-    if pool is not None and pool is not approval._UNAVAILABLE:
+    if _database_enabled():
         try:
-            async with pool.connection() as conn:
-                cur = await conn.execute(
-                    "SELECT 1 FROM briefs"
-                    " WHERE user_id = %s"
-                    " AND sent_at AT TIME ZONE %s >= %s::date"
-                    " LIMIT 1",
-                    (user_id, tz, str(local_today)),
-                )
-                return (await cur.fetchone()) is not None
+            return await repo.get_today_brief(user_id) is not None
         except Exception as exc:
             logger.warning("_brief_sent_today DB error: %s", exc)
 
@@ -102,14 +88,9 @@ async def _brief_sent_today(user_id: str, tz: str) -> bool:
 async def _record_brief(user_id: str, letters: dict[str, str]) -> str:
     brief_id = str(uuid4())
     now_iso = datetime.now(timezone.utc).isoformat()
-    pool = await approval._get_pool()
-    if pool is not None and pool is not approval._UNAVAILABLE:
+    if _database_enabled():
         try:
-            async with pool.connection() as conn:
-                await conn.execute(
-                    "INSERT INTO briefs (brief_id, user_id, letters) VALUES (%s, %s, %s)",
-                    (brief_id, user_id, json.dumps(letters)),
-                )
+            await repo.insert_brief(brief_id, user_id, letters)
             return brief_id
         except Exception as exc:
             logger.warning("_record_brief DB error: %s", exc)
@@ -120,17 +101,9 @@ async def _record_brief(user_id: str, letters: dict[str, str]) -> str:
 
 
 async def _nudge_already_sent(user_id: str, dedupe_key: str) -> bool:
-    pool = await approval._get_pool()
-    if pool is not None and pool is not approval._UNAVAILABLE:
+    if _database_enabled():
         try:
-            async with pool.connection() as conn:
-                cur = await conn.execute(
-                    "SELECT 1 FROM nudges"
-                    " WHERE user_id = %s AND dedupe_key = %s AND sent_at IS NOT NULL"
-                    " LIMIT 1",
-                    (user_id, dedupe_key),
-                )
-                return (await cur.fetchone()) is not None
+            return await repo.nudge_was_sent(user_id, dedupe_key)
         except Exception as exc:
             logger.warning("_nudge_already_sent DB error: %s", exc)
 
@@ -141,16 +114,14 @@ async def _nudge_already_sent(user_id: str, dedupe_key: str) -> bool:
 async def _record_nudge(user_id: str, item_id: str | None, dedupe_key: str) -> None:
     nudge_id = str(uuid4())
     now_iso = datetime.now(timezone.utc).isoformat()
-    pool = await approval._get_pool()
-    if pool is not None and pool is not approval._UNAVAILABLE:
+    if _database_enabled():
         try:
-            async with pool.connection() as conn:
-                await conn.execute(
-                    "INSERT INTO nudges (nudge_id, user_id, item_id, dedupe_key,"
-                    " sent_at, options) VALUES (%s, %s, %s, %s, now(), %s)"
-                    " ON CONFLICT (user_id, dedupe_key) DO UPDATE SET sent_at = now()",
-                    (nudge_id, user_id, item_id, dedupe_key, json.dumps([])),
-                )
+            stored_id = await repo.insert_nudge(
+                nudge_id, user_id, item_id, [], dedupe_key=dedupe_key,
+            )
+            await repo.mark_nudge_sent(
+                stored_id, user_id, datetime.now(timezone.utc),
+            )
             return
         except Exception as exc:
             logger.warning("_record_nudge DB error: %s", exc)
@@ -175,31 +146,10 @@ async def _safe_to_spend(user: dict) -> float:
     if weekly_cap is not None:
         weekly_cap = float(weekly_cap)
 
-    flexible_spent = 0.0
-    bills_remaining = 0.0
-
-    pool = await approval._get_pool()
-    if pool is not None and pool is not approval._UNAVAILABLE:
+    if _database_enabled():
         try:
-            async with pool.connection() as conn:
-                # Flexible spend this month
-                cur = await conn.execute(
-                    "SELECT public.flexible_spent_this_month(%s)", (user["user_id"],)
-                )
-                row = await cur.fetchone()
-                if row:
-                    flexible_spent = float(list(row.values())[0] or 0)
-
-                # Bills still due this month
-                now_local = datetime.now(ZoneInfo(user.get("tz", "America/Phoenix")))
-                cur2 = await conn.execute(
-                    "SELECT COALESCE(SUM(amount), 0) AS total FROM bills"
-                    " WHERE user_id = %s AND due_day >= %s",
-                    (user["user_id"], now_local.day),
-                )
-                row2 = await cur2.fetchone()
-                if row2:
-                    bills_remaining = float(list(row2.values())[0] or 0)
+            if await repo.get_budget(user["user_id"]) is not None:
+                return await repo.safe_to_spend(user["user_id"])
         except Exception as exc:
             logger.warning("_safe_to_spend DB error: %s", exc)
 
@@ -210,7 +160,7 @@ async def _safe_to_spend(user: dict) -> float:
     days_left = max(days_in_month - now.day + 1, 1)
     weeks_left = max(days_left / 7, 1)
 
-    available = monthly_income - bills_remaining - savings_goal - flexible_spent
+    available = monthly_income - savings_goal
     safe = max(available / weeks_left, 0)
 
     if weekly_cap is not None:

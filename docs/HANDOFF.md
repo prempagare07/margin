@@ -185,8 +185,9 @@ Pool, identity, and connection semantics:
   only if that hash matches the current unexpired challenge, then clears the
   challenge. The caller hashes the submitted code using the same scheme as
   when issuing it. Expired challenges are cleared; a changed challenge cannot
-  be verified using the old hash. Code issuance, rate limiting, and consent UI
-  remain the phone adapter's responsibility.
+  be verified using the old hash. Connect now issues a high-entropy possession
+  challenge consumed by `verify_phone_link` after a signed inbound Photon message.
+  See [ONBOARDING.md](ONBOARDING.md). Reminder opt-in UI remains separate.
 - Connection providers are `canvas`, `gmail`, `gcal`, `slack`, and `plaid`.
   `save_connection` replaces the snapshot: `None` clears an optional field.
   Fernet uses `TOKEN_ENCRYPTION_KEY`; private Canvas feed URLs go in
@@ -408,3 +409,13 @@ not create bank connections. Life's `budget_snapshot` path uses the imported row
 through `db.repo.safe_to_spend`, and `fetch_bills` reads configured recurring bills.
 No schema migration is needed. Full agent orchestration and scheduler integration
 remain separate from this adapter's verification.
+
+## User onboarding persistence
+
+The Connect action now saves the authenticated ASI sender, budget, recurring bills,
+and pending phone link in one transaction through `repo.save_onboarding`. The
+existing `upsert_user`, `save_budget`, `save_bill`, and `set_phone` helpers accept an
+optional shared `conn` for this transaction. Phone verification is separate from
+account creation, so Plaid can provision as soon as the Connect save succeeds.
+See [ONBOARDING.md](ONBOARDING.md) for the card format, phone-link flow, required
+Photon signature configuration, and tests. No schema migration is needed.
