@@ -693,3 +693,29 @@ async def safe_to_spend(user_id: str) -> float:
     if row is None:
         return 0.0
     return _safe_to_spend(row, row["bills"], row["spent"], row["today"])
+
+
+async def delete_user(user_id: str) -> None:
+    """Delete all data for a user (connections, items, plans, nudges, briefs, budget, bills, user row).
+
+    Used by reset_node so the student can start fresh. This is intentionally destructive
+    and irreversible — the caller must confirm before invoking.
+    """
+    async with (await get_pool()).connection() as conn:
+        # Delete in dependency order to avoid FK violations (nulls cascade where possible,
+        # but explicit order avoids surprises with future schema changes).
+        for table in (
+            "public.action_executions",
+            "public.plans",
+            "public.nudges",
+            "public.briefs",
+            "public.items",
+            "public.connections",
+            "public.bills",
+            "public.budgets",
+            "public.users",
+        ):
+            await conn.execute(
+                sql.SQL("DELETE FROM {} WHERE user_id = %s").format(sql.Identifier(*table.split("."))),
+                (user_id,),
+            )

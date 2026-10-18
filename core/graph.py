@@ -122,6 +122,10 @@ async def classify_node(state: GraphState) -> dict:
 
     lower = (state["text"] or "").lower()
     logger.info("classify: text=%r", lower[:120])
+    if any(k in lower for k in ("summary", "what happened", "today", "update me", "brief me", "what's new", "whats new", "catch me up", "catch up")):
+        return {"intent": "summary"}
+    if any(k in lower for k in ("reset", "clear account", "start over", "disconnect all", "delete account", "remove all")):
+        return {"intent": "reset"}
     if any(k in lower for k in ("plan", "week", "schedule", "organiz", "priorit", "assign", "task", "deadline", "due")):
         return {"intent": "plan_week"}
     if any(k in lower for k in ("upgrade", "pro ", "finals pack", "subscribe")):
@@ -138,9 +142,11 @@ async def classify_node(state: GraphState) -> dict:
                     "role": "system",
                     "content": (
                         "Classify the student message into exactly one of: "
-                        "plan_week, open_task, budget, upgrade, snooze, chat. "
+                        "plan_week, open_task, budget, upgrade, snooze, summary, reset, chat. "
                         "Reply with that one word only. "
-                        "Use plan_week for any request to plan, schedule, organize, or block time."
+                        "Use plan_week for any request to plan, schedule, organize, or block time. "
+                        "Use summary for any request for a daily update, brief, or summary of what's happening. "
+                        "Use reset for any request to disconnect all apps, clear account, or start over."
                     ),
                 },
                 {"role": "user", "content": state["text"]},
@@ -148,7 +154,7 @@ async def classify_node(state: GraphState) -> dict:
             timeout=8,
         )
         intent = (reply or "chat").strip().lower().split()[0]
-        valid = {"plan_week", "open_task", "budget", "upgrade", "snooze", "chat"}
+        valid = {"plan_week", "open_task", "budget", "upgrade", "snooze", "summary", "reset", "chat"}
         logger.info("classify: llm_intent=%s", intent)
         return {"intent": intent if intent in valid else "chat"}
     except Exception:
@@ -421,10 +427,19 @@ class _PlanOut(BaseModel):
 
 async def plan_week_node(state: GraphState) -> dict:
     """Call Step 5 to schedule items into free slots."""
-    items = state["items"]
+    # Only schedule Canvas/Gmail/Slack items — GCal events are just constraints
+    items = [it for it in state["items"] if it.get("source") != "gcal"]
+    # Deduplicate by source_id (same assignment from multiple syncs)
+    seen_src: set[str] = set()
+    deduped: list[dict] = []
+    for it in items:
+        key = it.get("source_id") or it.get("item_id", "")
+        if key not in seen_src:
+            seen_src.add(key)
+            deduped.append(it)
+    items = deduped
     slots = state["free_slots"]
-    # Only abort if we have nothing to work with — non-critical errors (Plaid,
-    # campus events) still let us plan with Canvas/Gmail items + GCal slots.
+    # Only abort if we have nothing to work with
     if not items or not slots:
         return {"actions": []}
 
@@ -447,7 +462,8 @@ async def plan_week_node(state: GraphState) -> dict:
                 "and return a JSON object {\"actions\": [...]}. Each action: "
                 "{action_id (unique, e.g. 'a1'), type ('create_event'), "
                 "params: {title, item_id, start_iso (ISO 8601 UTC), end_iso, "
-                "summary_row (≤50 chars for review card)}}. Max 8 actions."
+                "summary_row (≤50 chars for review card)}}. Max 8 actions. "
+                "Create at most one study block per item. Do not repeat the same item_id in multiple actions."
             ),
         },
         {
@@ -684,6 +700,112 @@ async def cancel_node(state: GraphState) -> dict:
         await approval.cancel(plan_id, user_id)
 
     await send_text(ctx, sender, "Plan cancelled. Say 'plan my week' whenever you're ready.")
+    return {}
+
+
+async def summary_node(state: GraphState) -> dict:
+    """Gather all sources and return a rich daily brief on demand."""
+    ctx = state["ctx"]
+    sender = state["sender"]
+    user_id = state["user_id"]
+
+    await send_text(ctx, sender, "Pulling your updates — one moment...")
+
+    try:
+        items, slots, _ = await _gather_direct(user_id)
+    except Exception:
+        items, slots = [], []
+
+    if not items:
+        await send_text(ctx, sender, "Nothing to report right now — connect Canvas, Gmail, or Slack to get started.")
+        return {}
+
+    now = datetime.now(timezone.utc)
+    item_lines = []
+    for it in items[:15]:
+        line = f"• [{it.get('source','?').upper()}] {it['title']}"
+        if it.get("due_at"):
+            try:
+                due = datetime.fromisoformat(it["due_at"].replace("Z", "+00:00"))
+                diff = (due - now).days
+                line += f" — due in {diff}d" if diff >= 0 else " — OVERDUE"
+            except Exception:
+                pass
+        if it.get("quote"):
+            line += f"\n  {it['quote'][:100]}"
+        item_lines.append(line)
+
+    prompt_items = "\n".join(item_lines)
+    try:
+        reply = await fast(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Margin, a proactive chief-of-staff for an ASU student. "
+                        "Given the student's current items from Canvas, Gmail, Slack, and Calendar, "
+                        "write a concise daily brief in 4-6 bullet points. "
+                        "Lead with what's most urgent. Mention deadlines, pending emails needing action, "
+                        "and any schedule conflicts. Be specific with names, dates, and courses. "
+                        "End with one proactive suggestion (e.g. 'Want me to block time for X?')."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Today is {now.strftime('%A, %B %-d')}. Here are my current items:\n\n{prompt_items}",
+                },
+            ],
+            timeout=20,
+        )
+    except Exception:
+        reply = None
+
+    await send_text(ctx, sender, reply or f"Here's what's on your plate:\n\n{chr(10).join(item_lines[:6])}")
+    return {}
+
+
+async def reset_node(state: GraphState) -> dict:
+    """Clear all connections and user data for a fresh start."""
+    ctx = state["ctx"]
+    sender = state["sender"]
+    user_id = state["user_id"]
+
+    from core.cards import card_message
+    # Confirm card
+    payload = {
+        "root": {
+            "type": "section",
+            "title": "Reset your account?",
+            "children": [
+                {"type": "text", "value": "This will disconnect all apps (Canvas, Gmail, Google Calendar, Slack) and delete your account data. Your calendar events and emails are NOT deleted.", "style": "muted"},
+                {"type": "button", "label": "Yes, reset everything", "primary": True,
+                 "action": {"selection": {"action": "reset_confirm"}}},
+                {"type": "button", "label": "Cancel",
+                 "action": {"selection": {"action": "back"}}},
+            ],
+        }
+    }
+    sel = state.get("selection") or {}
+    if sel.get("action") == "reset_confirm":
+        # Execute the reset
+        try:
+            from db import repo
+            from integrations import composio_tools
+            # Disconnect Composio providers
+            for provider in ("gmail", "gcal", "slack"):
+                try:
+                    await composio_tools.save_connection_settings(user_id, provider, {})
+                except Exception:
+                    pass
+            # Delete user from DB
+            await repo.delete_user(user_id)
+        except Exception as exc:
+            logger.warning("reset: failed: %s", exc)
+            await send_text(ctx, sender, "Reset failed — please try again or contact support.")
+            return {}
+        await send_text(ctx, sender, "Account reset ✓ All connections cleared. Say 'hi' to start fresh.")
+    else:
+        await ctx.send(sender, card_message("custom", payload))
     return {}
 
 
@@ -1152,10 +1274,13 @@ async def chat_node(state: GraphState) -> dict:
                 {
                     "role": "system",
                     "content": (
-                        "You are Margin, a concise chief-of-staff for an ASU student. "
-                        "Help with academics, schedule, budget, and campus life. "
-                        "Keep replies under 3 sentences. "
-                        "If they want to plan their week, say: just type 'plan my week'."
+                        "You are Margin, a proactive AI chief-of-staff for an ASU student. "
+                        "Answer concisely and helpfully. You can: plan the week ('plan my week'), "
+                        "show a daily brief ('summary'), connect apps, manage budget, plan calendar blocks. "
+                        "Hard rules: never do coursework for them, only create Gmail drafts (not send), never delete events. "
+                        "If they ask for a summary or daily update, tell them to type 'summary'. "
+                        "If they ask to reset/disconnect, tell them to type 'reset'. "
+                        "Keep replies under 4 sentences. Be specific and actionable."
                     ),
                 },
                 {"role": "user", "content": state["text"]},
@@ -1188,6 +1313,10 @@ def _route(state: GraphState) -> str:
         "open_task":  "priorities",
         "snooze":     "chat",
         "budget":     "chat",
+        "summary":    "summary",
+        "reset":      "reset",
+        "reset_confirm": "reset",
+        "back":       "chat",
         "chat":       "chat",
     }
     return routes.get(state.get("intent", "chat"), "chat")
@@ -1208,6 +1337,8 @@ def _build() -> Any:
         ("store_plan",  store_plan_node),
         ("execute",     execute_node),
         ("cancel",      cancel_node),
+        ("summary",     summary_node),
+        ("reset",       reset_node),
         ("priorities",  priorities_node),
         ("upgrade",     upgrade_node),
         ("chat",        chat_node),
@@ -1225,12 +1356,14 @@ def _build() -> Any:
             "cancel":      "cancel",
             "upgrade":     "upgrade",
             "priorities":  "priorities",
+            "summary":     "summary",
+            "reset":       "reset",
             "chat":        "chat",
         },
     )
     g.add_edge("gather",     "plan_week")
     g.add_edge("plan_week",  "store_plan")
-    for terminal in ("connect", "check_links", "store_plan", "execute", "cancel", "priorities", "upgrade", "chat"):
+    for terminal in ("connect", "check_links", "store_plan", "execute", "cancel", "summary", "reset", "priorities", "upgrade", "chat"):
         g.add_edge(terminal, END)
 
     return g.compile()
