@@ -1,7 +1,6 @@
 """Stored plans, review and execute-once approval. Owner: Prem."""
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -31,38 +30,20 @@ def _mem_upsert_plan(plan_id: str, user_id: str, actions: list[dict]) -> None:
         }
 
 
-# ---------------------------------------------------------------------------
-# DB pool (lazy, optional)
-# ---------------------------------------------------------------------------
-_pool = None
-_UNAVAILABLE = object()  # sentinel: tried once and failed
+def _db_available() -> bool:
+    return bool(os.environ.get("DATABASE_URL"))
 
 
-async def _get_pool():
-    global _pool
-    if _pool is _UNAVAILABLE:
-        return None
-    if _pool is not None:
-        return _pool
-    url = os.environ.get("DATABASE_URL", "")
-    if not url:
-        _pool = _UNAVAILABLE
+async def _repo():
+    """Return db.repo module, or None if DB is unavailable."""
+    if not _db_available():
         return None
     try:
-        from psycopg_pool import AsyncConnectionPool
-        from psycopg.rows import dict_row
-        candidate = AsyncConnectionPool(
-            url, min_size=1, max_size=4,
-            kwargs={"row_factory": dict_row},
-            open=False,
-        )
-        await candidate.open(wait=True, timeout=5)
-        _pool = candidate
-        logger.info("approval: DB pool connected")
-        return _pool
+        from db import repo
+        await repo.get_pool()  # validates the connection on the current event loop
+        return repo
     except Exception as exc:
-        logger.warning("approval: DB pool failed (%s) — using in-memory store", exc)
-        _pool = _UNAVAILABLE
+        logger.warning("approval: DB unavailable (%s) — using memory", exc)
         return None
 
 
@@ -71,24 +52,13 @@ async def _get_pool():
 # ---------------------------------------------------------------------------
 
 async def create_plan(user_id: str, actions: list[dict]) -> str:
-    """Persist a pending plan; return plan_id."""
     plan_id = str(uuid4())
-    pool = await _get_pool()
-    if pool is None:
+    r = await _repo()
+    if r is None:
         _mem_upsert_plan(plan_id, user_id, actions)
         return plan_id
     try:
-        async with pool.connection() as conn:
-            await conn.execute(
-                "INSERT INTO plans (plan_id, user_id, actions) VALUES (%s, %s, %s)",
-                (plan_id, user_id, json.dumps(actions)),
-            )
-            for a in actions:
-                await conn.execute(
-                    "INSERT INTO action_executions (plan_id, action_id, user_id)"
-                    " VALUES (%s, %s, %s)",
-                    (plan_id, a["action_id"], user_id),
-                )
+        await r.insert_plan(plan_id, user_id, actions)
         return plan_id
     except Exception as exc:
         logger.warning("create_plan DB error: %s — using memory", exc)
@@ -97,37 +67,29 @@ async def create_plan(user_id: str, actions: list[dict]) -> str:
 
 
 async def get_plan(plan_id: str, user_id: str) -> dict | None:
-    pool = await _get_pool()
-    if pool is None:
+    r = await _repo()
+    if r is None:
         return _mem_plans.get(plan_id)
     try:
-        async with pool.connection() as conn:
-            cur = await conn.execute(
-                "SELECT * FROM plans WHERE plan_id = %s AND user_id = %s",
-                (plan_id, user_id),
-            )
-            return await cur.fetchone()
+        row = await r.get_plan(plan_id, user_id)
+        if row is not None:
+            return dict(row)
+        return None
     except Exception as exc:
         logger.warning("get_plan DB error: %s", exc)
         return _mem_plans.get(plan_id)
 
 
 async def pending_plan_for(user_id: str) -> dict | None:
-    """Most recent pending plan for a user, or None."""
-    pool = await _get_pool()
-    if pool is None:
+    r = await _repo()
+    if r is None:
         for p in reversed(list(_mem_plans.values())):
             if p["user_id"] == user_id and p["status"] == "pending":
                 return p
         return None
     try:
-        async with pool.connection() as conn:
-            cur = await conn.execute(
-                "SELECT * FROM plans WHERE user_id = %s AND status = 'pending'"
-                " ORDER BY created_at DESC LIMIT 1",
-                (user_id,),
-            )
-            return await cur.fetchone()
+        row = await r.pending_plan_for(user_id)
+        return dict(row) if row is not None else None
     except Exception as exc:
         logger.warning("pending_plan_for DB error: %s", exc)
         for p in reversed(list(_mem_plans.values())):
@@ -136,50 +98,54 @@ async def pending_plan_for(user_id: str) -> dict | None:
         return None
 
 
-async def _set_status(
-    plan_id: str, user_id: str,
-    from_status: str, to_status: str,
-    ts_col: str | None = None,
-) -> bool:
-    pool = await _get_pool()
-    if pool is None:
+async def approve(plan_id: str, user_id: str) -> bool:
+    r = await _repo()
+    if r is None:
         p = _mem_plans.get(plan_id)
-        if p and p["user_id"] == user_id and p["status"] == from_status:
-            p["status"] = to_status
-            if ts_col:
-                p[ts_col] = datetime.now(timezone.utc).isoformat()
+        if p and p["user_id"] == user_id and p["status"] == "pending":
+            p["status"] = "approved"
+            p["approved_at"] = datetime.now(timezone.utc).isoformat()
             return True
         return False
     try:
-        col_part = f", {ts_col} = now()" if ts_col else ""
-        async with pool.connection() as conn:
-            cur = await conn.execute(
-                f"UPDATE plans SET status = %s{col_part}"
-                " WHERE plan_id = %s AND user_id = %s AND status = %s",
-                (to_status, plan_id, user_id, from_status),
-            )
-            return (cur.rowcount or 0) == 1
+        return await r.approve_plan(plan_id, user_id)
     except Exception as exc:
-        logger.warning("_set_status DB error: %s", exc)
+        logger.warning("approve DB error: %s", exc)
         return False
 
 
-async def approve(plan_id: str, user_id: str) -> bool:
-    return await _set_status(plan_id, user_id, "pending", "approved", "approved_at")
-
-
 async def cancel(plan_id: str, user_id: str) -> bool:
-    return await _set_status(plan_id, user_id, "pending", "cancelled")
+    r = await _repo()
+    if r is None:
+        p = _mem_plans.get(plan_id)
+        if p and p["user_id"] == user_id and p["status"] == "pending":
+            p["status"] = "cancelled"
+            return True
+        return False
+    try:
+        return await r.update_plan_status(plan_id, user_id, "cancelled")
+    except Exception as exc:
+        logger.warning("cancel DB error: %s", exc)
+        return False
 
 
 async def mark_done(plan_id: str, user_id: str) -> None:
-    await _set_status(plan_id, user_id, "approved", "done", "executed_at")
+    r = await _repo()
+    if r is None:
+        p = _mem_plans.get(plan_id)
+        if p:
+            p["status"] = "done"
+            p["executed_at"] = datetime.now(timezone.utc).isoformat()
+        return
+    try:
+        await r.update_plan_status(plan_id, user_id, "done")
+    except Exception as exc:
+        logger.warning("mark_done DB error: %s", exc)
 
 
 async def claim_action(plan_id: str, action_id: str, user_id: str) -> bool:
-    """Atomically set action pending→running. Returns True if claimed."""
-    pool = await _get_pool()
-    if pool is None:
+    r = await _repo()
+    if r is None:
         key = (plan_id, action_id)
         ex = _mem_execs.get(key)
         if ex and ex["status"] == "pending":
@@ -187,15 +153,7 @@ async def claim_action(plan_id: str, action_id: str, user_id: str) -> bool:
             return True
         return False
     try:
-        async with pool.connection() as conn:
-            cur = await conn.execute(
-                "UPDATE action_executions"
-                " SET status = 'running', started_at = now()"
-                " WHERE plan_id = %s AND action_id = %s"
-                " AND user_id = %s AND status = 'pending'",
-                (plan_id, action_id, user_id),
-            )
-            return (cur.rowcount or 0) == 1
+        return await r.claim_action_execution(plan_id, action_id, user_id)
     except Exception as exc:
         logger.warning("claim_action DB error: %s", exc)
         return False
@@ -206,20 +164,15 @@ async def complete_action(
     result: dict,
     error: str | None = None,
 ) -> None:
-    status = "failed" if error else "succeeded"
-    pool = await _get_pool()
-    if pool is None:
+    r = await _repo()
+    if r is None:
         key = (plan_id, action_id)
         if key in _mem_execs:
+            status = "failed" if error else "succeeded"
             _mem_execs[key].update({"status": status, "result": result, "error": error})
         return
     try:
-        async with pool.connection() as conn:
-            await conn.execute(
-                "UPDATE action_executions"
-                " SET status = %s, result = %s, error = %s, completed_at = now()"
-                " WHERE plan_id = %s AND action_id = %s AND user_id = %s",
-                (status, json.dumps(result), error, plan_id, action_id, user_id),
-            )
+        status = "failed" if error else "succeeded"
+        await r.finish_action_execution(plan_id, action_id, user_id, status=status, result=result, error=error)
     except Exception as exc:
         logger.warning("complete_action DB error: %s", exc)

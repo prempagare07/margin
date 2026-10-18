@@ -113,6 +113,27 @@ async def _dispatch(phone: str, text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Stripe payment complete redirect
+# ---------------------------------------------------------------------------
+
+@app.get("/payments/complete", response_class=HTMLResponse)
+async def payments_complete(
+    session_id: str = "",
+    user: str = "",
+    tier: str = "",
+) -> HTMLResponse:
+    from payments.stripe_flow import TIERS
+    tier_name = TIERS.get(tier, {}).get("name", "Margin Pro")
+    return HTMLResponse(
+        f"<html><body style='font-family:sans-serif;max-width:480px;margin:60px auto;text-align:center'>"
+        f"<h2>Payment received!</h2>"
+        f"<p><strong>{tier_name}</strong> is now being activated.</p>"
+        f"<p>Return to ASI:One — Margin will confirm there in a moment.</p>"
+        f"</body></html>"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Shared completion page
 # ---------------------------------------------------------------------------
 

@@ -10,7 +10,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
-from core import approval
+from core import approval, gather as gather_bus
 from core.observability import aspan
 from core.cards import (
     connect_form,
@@ -142,25 +142,157 @@ async def classify_node(state: GraphState) -> dict:
 async def gather_node(state: GraphState) -> dict:
     """Gather items + free slots from specialists (or fixtures)."""
     async with aspan("agent.gather", "gather items", user_id=state["user_id"]) as s:
-        if FAKE:
+        if FAKE or not _is_agent_ctx(state["ctx"]):
             items, slots = _fake_items(), _fake_slots()
         else:
-            # Real path: wire ctx.send_and_receive to specialist agents
-            logger.info("gather_node: real specialists not yet wired — using fixtures")
-            items, slots = _fake_items(), _fake_slots()
+            items, slots = await _gather_from_specialists(
+                state["ctx"], state["user_id"], state["sender"]
+            )
         if s:
             s.set_data("item_count", len(items))
         return {"items": items, "free_slots": slots}
 
 
-class _Action(BaseModel):
-    action_id: str
-    type: str
+def _is_agent_ctx(ctx: Any) -> bool:
+    """True when ctx is a real uAgent Context (not PhotonCtx)."""
+    return hasattr(ctx, "_agent") or hasattr(ctx, "address")
+
+
+async def _gather_from_specialists(ctx: Any, user_id: str, sender: str) -> tuple[list, list]:
+    """Send GatherRequest to all 4 specialists; collect results with 15s timeout."""
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+    from uuid import uuid4
+    from shared.protocol import GatherRequest
+
+    # Load addresses from file (written by bureau._print_addresses)
+    addresses = _load_addresses()
+    if not addresses:
+        logger.warning("gather: no addresses.json — falling back to fixtures")
+        return _fake_items(), _fake_slots()
+
+    now = datetime.now(timezone.utc)
+    window_start = now.isoformat()
+    window_end = (now + timedelta(days=7)).isoformat()
+
+    specialist_keys = ["margin-academic", "margin-inbox", "margin-planner", "margin-life"]
+    futures: dict[str, asyncio.Future] = {}
+
+    for key in specialist_keys:
+        addr = addresses.get(key)
+        if not addr:
+            continue
+        req_id = str(uuid4())
+        fut = gather_bus.register(req_id)
+        futures[req_id] = fut
+        try:
+            await ctx.send(addr, GatherRequest(
+                request_id=req_id,
+                user_id=user_id,
+                window_start=window_start,
+                window_end=window_end,
+            ))
+        except Exception as exc:
+            logger.warning("gather: failed to send to %s: %s", key, exc)
+            gather_bus.resolve(req_id, None)
+
+    all_items: list = []
+    all_slots: list = []
+
+    for req_id, fut in futures.items():
+        try:
+            result = await asyncio.wait_for(fut, timeout=15)
+            if result and not result.error:
+                all_items.extend(result.items or [])
+                all_slots.extend(result.free_slots or [])
+            elif result and result.error:
+                logger.warning("gather: specialist error: %s", result.error)
+        except asyncio.TimeoutError:
+            logger.warning("gather: specialist timed out for request %s", req_id)
+
+    if not all_items:
+        logger.info("gather: no real items collected — using fixtures")
+        return _fake_items(), _fake_slots()
+
+    return all_items, all_slots or _fake_slots()
+
+
+def _load_addresses() -> dict:
+    """Load agent addresses from agents/addresses.json."""
+    import json
+    try:
+        with open("agents/addresses.json") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+async def _execute_action(
+    ctx: Any, user_id: str, plan_id: str, action: dict, addresses: dict
+) -> tuple[str | None, str | None]:
+    """Send an ActionRequest to the right specialist and await ActionResult.
+
+    Returns (link, error). Falls back to fake calendar link when FAKE or no ctx.
+    """
+    import asyncio
+    from uuid import uuid4
+    from shared.protocol import ActionRequest
+
+    action_type = action.get("type", "create_event")
+    raw_params = action.get("params") or {}
+
+    # Route: create_event/add_reminder → planner, create_draft → inbox
+    if action_type == "create_draft":
+        specialist = "margin-inbox"
+        params = {k: raw_params.get(k, "") for k in ("to", "subject", "body")}
+    else:
+        specialist = "margin-planner"
+        params = {
+            "title": raw_params.get("title", "Margin block"),
+            "start_iso": raw_params.get("start_iso", ""),
+            "end_iso": raw_params.get("end_iso", ""),
+            "description": f"Scheduled by Margin (plan {plan_id})",
+        }
+
+    if FAKE or not _is_agent_ctx(ctx):
+        return "https://calendar.google.com", None
+
+    addr = addresses.get(specialist)
+    if not addr:
+        return "https://calendar.google.com", None
+
+    aid = action["action_id"]
+    fut = gather_bus.register(aid)
+    try:
+        await ctx.send(addr, ActionRequest(
+            action_id=aid,
+            plan_id=plan_id,
+            user_id=user_id,
+            type=action_type,
+            params=params,
+        ))
+        result = await asyncio.wait_for(fut, timeout=15)
+        if result and result.ok:
+            return result.link or "https://calendar.google.com", None
+        return None, result.error if result else "no response"
+    except asyncio.TimeoutError:
+        return None, "specialist timed out"
+    except Exception as exc:
+        return None, str(exc)
+
+
+class _ActionParams(BaseModel):
     title: str
     item_id: str
     start_iso: str
     end_iso: str
     summary_row: str = ""
+
+
+class _Action(BaseModel):
+    action_id: str
+    type: str
+    params: _ActionParams
 
 
 class _PlanOut(BaseModel):
@@ -188,10 +320,10 @@ async def plan_week_node(state: GraphState) -> dict:
             "role": "system",
             "content": (
                 "You are a student planner. Assign each open item to a free slot "
-                "and return a JSON object {\"actions\": [...]}. Each action needs: "
-                "action_id (unique, e.g. 'a1'), type ('create_event'), title, "
-                "item_id, start_iso (ISO 8601 UTC), end_iso, summary_row "
-                "(≤50 chars for a review card). Max 8 actions."
+                "and return a JSON object {\"actions\": [...]}. Each action: "
+                "{action_id (unique, e.g. 'a1'), type ('create_event'), "
+                "params: {title, item_id, start_iso (ISO 8601 UTC), end_iso, "
+                "summary_row (≤50 chars for review card)}}. Max 8 actions."
             ),
         },
         {
@@ -206,18 +338,19 @@ async def plan_week_node(state: GraphState) -> dict:
         logger.info("plan_week: %d actions via %s", len(actions), model)
     except Exception as exc:
         logger.warning("plan_week LLM failed: %s — using fallback", exc)
-        # Fallback: one block per item using the available slots
         actions = []
         for i, item in enumerate(items[:5]):
             slot = slots[i] if i < len(slots) else None
             actions.append({
                 "action_id": f"a{i + 1}",
                 "type": "create_event",
-                "title": f"Work on: {item['title']}",
-                "item_id": item["item_id"],
-                "start_iso": slot[0] if slot else datetime.now(timezone.utc).isoformat(),
-                "end_iso": slot[1] if slot else datetime.now(timezone.utc).isoformat(),
-                "summary_row": item["title"][:50],
+                "params": {
+                    "title": f"Work on: {item['title']}",
+                    "item_id": item["item_id"],
+                    "start_iso": slot[0] if slot else datetime.now(timezone.utc).isoformat(),
+                    "end_iso": slot[1] if slot else datetime.now(timezone.utc).isoformat(),
+                    "summary_row": item["title"][:50],
+                },
             })
 
     return {"actions": actions}
@@ -235,8 +368,8 @@ async def store_plan_node(state: GraphState) -> dict:
 
     rows = [
         {
-            "label": a.get("summary_row") or a["title"],
-            "value": a.get("start_iso", "")[:16].replace("T", " "),
+            "label": (a.get("params") or {}).get("summary_row") or (a.get("params") or {}).get("title", a.get("action_id", "")),
+            "value": ((a.get("params") or {}).get("start_iso", ""))[:16].replace("T", " "),
         }
         for a in actions
     ]
@@ -283,15 +416,17 @@ async def execute_node(state: GraphState) -> dict:
     raw = plan["actions"]
     actions: list[dict] = raw if isinstance(raw, list) else json.loads(raw)
 
+    addresses = _load_addresses()
     results: list[dict] = []
     for action in actions:
         aid = action["action_id"]
         if not await approval.claim_action(plan_id, aid, user_id):
             continue
-        # With FAKE_SPECIALISTS or until Alex's action executor lands, mark done
-        link = "https://calendar.google.com"
-        await approval.complete_action(plan_id, aid, user_id, {"link": link})
-        results.append({"label": action.get("title", "Event"), "link": link})
+        link, error = await _execute_action(ctx, user_id, plan_id, action, addresses)
+        await approval.complete_action(plan_id, aid, user_id, {"link": link}, error)
+        if link:
+            p = action.get("params") or {}
+            results.append({"label": p.get("title", action.get("action_id", "Event")), "link": link})
 
     await approval.mark_done(plan_id, user_id)
 
@@ -342,14 +477,55 @@ async def upgrade_node(state: GraphState) -> dict:
     ctx = state["ctx"]
     sender = state["sender"]
     channel = state["channel"]
-    if channel == "asi1":
-        await ctx.send(sender, upgrade_card())
-    else:
-        await send_text(
-            ctx, sender,
-            "Pro is $4.99 / 30 days. Finals Pack is $1.99 (two weeks during finals). "
-            "Open ASI:One to upgrade.",
+    sel = state.get("selection") or {}
+    tier = sel.get("tier")
+
+    # No tier yet — show the upgrade card
+    if not tier or channel != "asi1":
+        if channel == "asi1":
+            await ctx.send(sender, upgrade_card())
+        else:
+            await send_text(
+                ctx, sender,
+                "Pro is $4.99 / 30 days. Finals Pack is $1.99 (two weeks during finals). "
+                "Open ASI:One to upgrade.",
+            )
+        return {}
+
+    # Tier selected — create Stripe checkout and send RequestPayment
+    from uagents_core.contrib.protocols.payment import Funds, RequestPayment
+    from payments.stripe_flow import TIERS, create_checkout
+
+    t = TIERS.get(tier)
+    if not t:
+        await send_text(ctx, sender, f"Unknown tier: {tier!r}")
+        return {}
+
+    try:
+        checkout = await create_checkout(
+            user_id=state["user_id"],
+            tier=tier,
+            session_ref=sender,
         )
+    except Exception as exc:
+        logger.warning("upgrade: checkout failed: %s", exc)
+        await send_text(ctx, sender, "Couldn't start checkout right now. Please try again.")
+        return {}
+
+    amount = f"{t['amount_cents'] / 100:.2f}"
+    req = RequestPayment(
+        accepted_funds=[Funds(currency="USD", amount=amount, payment_method="stripe")],
+        recipient=str(getattr(ctx, "address", sender)),
+        deadline_seconds=1800,
+        reference=sender,
+        description=f"{t['name']} — ${amount}",
+        metadata={"stripe": checkout, "service": f"margin_{tier}"},
+    )
+    await ctx.send(sender, req)
+    await send_text(
+        ctx, sender,
+        f"Complete checkout to activate {t['name']}. I'll confirm here once paid.",
+    )
     return {}
 
 
