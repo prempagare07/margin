@@ -570,7 +570,38 @@ async def connect_node(state: GraphState) -> dict:
             f"message from that phone to {destination} within 10 minutes:\n\n"
             f"LINK {result.link_code}\n\n"
             "Your phone will be linked after Margin receives that message.")
+
+    # Now guide through app connections
+    await _send_app_connection_card(ctx, sender, state["user_id"])
     return {}
+
+
+async def _send_app_connection_card(ctx, sender: str, user_id: str) -> None:
+    """Send a card with links to connect Canvas, Gmail, Google Calendar, and Slack."""
+    base = os.environ.get("PUBLIC_BASE_URL", "https://inappmargin.vip")
+    links: dict[str, str] = {}
+
+    try:
+        from web.connect_state import make_state
+        links["Canvas"] = f"{base}/connect/canvas?state={make_state(user_id)}"
+    except Exception:
+        links["Canvas"] = f"{base}/connect/canvas"
+
+    try:
+        from integrations.composio_tools import connect_link
+        for app, label in [("gmail", "Gmail"), ("googlecalendar", "Google Calendar"), ("slack", "Slack")]:
+            try:
+                links[label] = await connect_link(user_id, app)
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.warning("connect: composio links failed: %s", exc)
+
+    await send_text(ctx, sender,
+        "Next, connect your apps so Margin can read your assignments, emails, and calendar. "
+        "Click each button below — you can skip any you don't use:")
+    from core.cards import link_buttons
+    await ctx.send(sender, link_buttons(links))
 
 
 async def chat_node(state: GraphState) -> dict:
@@ -580,6 +611,12 @@ async def chat_node(state: GraphState) -> dict:
     channel = state["channel"]
     text = state["text"].lower().strip()
     sentry_sdk.logger.info("chat: user=" + state["user_id"] + " intent=" + str(state.get("intent")) + " text=" + repr(text[:80]))
+
+    # App linked confirmation
+    if state.get("intent") == "linked":
+        app = (state.get("selection") or {}).get("app", "app")
+        await send_text(ctx, sender, f"{app} connected ✓ You're all set! Say 'plan my week' whenever you're ready.")
+        return {}
 
     # Greetings → show the Connect onboarding form (ASI:One) or prompt (Photon)
     greetings = {"hi", "hello", "hey", "start", "help", "get started", "setup", "set up"}
@@ -621,6 +658,7 @@ async def chat_node(state: GraphState) -> dict:
 def _route(state: GraphState) -> str:
     routes: dict[str, str] = {
         "connect":    "connect",
+        "linked":     "chat",
         "plan_week":  "gather",
         "approve":    "execute",
         "cancel":     "cancel",
