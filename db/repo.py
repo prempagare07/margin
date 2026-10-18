@@ -209,6 +209,15 @@ async def get_connection(user_id: str, provider: str) -> dict | None:
     return row
 
 
+async def set_connection_status(user_id: str, provider: str, account_id: str | None, status: str) -> None:
+    """Update status without overwriting concurrent settings or a newly selected account."""
+    if provider not in _PROVIDERS or status not in {"active", "relink_required", "pending"}:
+        raise ValueError("Invalid connection status")
+    await _one("""UPDATE public.connections SET status = %s, updated_at = now()
+                  WHERE user_id = %s AND provider = %s AND composio_account_id IS NOT DISTINCT FROM %s
+                  RETURNING user_id""", (status, user_id, provider, account_id))
+
+
 def _prepare_item(raw: dict) -> dict:
     data = dict(raw)
     for field in _ITEM_TIMES:
@@ -278,6 +287,12 @@ async def items_in_window(user_id: str, start: str, end: str) -> list[dict]:
         (user_id, lower, upper, lower, upper, lower, lower),
     )
     return [_item_row(row) for row in rows]
+
+
+async def get_item(user_id: str, item_id: str) -> dict | None:
+    """Resolve a source only through an item owned by the authenticated user."""
+    row = await _one("SELECT * FROM public.items WHERE user_id = %s AND item_id = %s", (user_id, item_id))
+    return _item_row(row) if row is not None else None
 
 
 async def cached_gather_result(

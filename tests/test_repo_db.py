@@ -129,6 +129,146 @@ async def test_connections_encrypted_and_scoped(monkeypatch):
         await repo.get_connection("alex", "canvas")
 
 
+async def test_connection_status_guard_preserves_account_selection_and_encrypted_settings():
+    settings = {"settings": {"calendar_ids": ["study@example.edu"], "write_calendar_id": "study@example.edu"}}
+    await repo.save_connection("alex", "gcal", composio_account_id="ca_old", secret=settings)
+    await repo.save_connection("other", "gcal", composio_account_id="ca_other")
+    await repo.save_connection("alex", "gmail", composio_account_id="ca_gmail")
+    await repo.set_connection_status("alex", "gcal", "ca_old", "relink_required")
+    selected = await repo.get_connection("alex", "gcal")
+    assert selected["status"] == "relink_required" and selected["secret"] == settings
+    assert (await repo.get_connection("other", "gcal"))["status"] == "active"
+    assert (await repo.get_connection("alex", "gmail"))["status"] == "active"
+    # A delayed failure for the old account cannot revoke its replacement.
+    await repo.save_connection("alex", "gcal", composio_account_id="ca_new", secret=settings)
+    await repo.set_connection_status("alex", "gcal", "ca_old", "relink_required")
+    selected = await repo.get_connection("alex", "gcal")
+    assert selected["composio_account_id"] == "ca_new" and selected["status"] == "active"
+    assert selected["secret"] == settings
+    with pytest.raises(ValueError):
+        await repo.set_connection_status("alex", "gcal", "ca_new", "arbitrary-status")
+
+
+async def test_source_item_lookup_requires_authenticated_owner_and_preserves_namespace():
+    from integrations.composio.models import source_key
+
+    key = source_key("ca_calendar", "study@example.edu", "event-native")
+    await repo.upsert_items([event("owned", source_id=key), event("other-owned", "other")])
+    saved = await repo.get_item("alex", "owned")
+    assert saved["source_id"] == key and saved["user_id"] == "alex"
+    assert saved["starts_at"] == "2026-10-19T17:00:00Z"
+    assert await repo.get_item("other", "owned") is None
+    assert await repo.get_item("alex", "other-owned") is None
+    assert await repo.get_item("alex", "missing") is None
+
+
+@pytest_asyncio.fixture
+async def composio_execution(monkeypatch):
+    """Real local approval/claim/receipt storage; only provider boundaries are fake."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from integrations.composio import actions as dispatcher
+    from integrations.composio.models import CalendarOption, ConnectionState, ReadBatch, ToolResult
+    from shared.protocol import ActionRequest
+
+    params = {"account_id": "ca_calendar", "calendar_id": "study@example.edu", "title": "Study physics",
+              "starts_at": "2026-10-19T10:00:00-07:00", "ends_at": "2026-10-19T11:30:00-07:00"}
+    settings = {"calendar_ids": ["study@example.edu"], "write_calendar_id": "study@example.edu"}
+    await repo.save_connection("alex", "gcal", composio_account_id="ca_calendar", secret={"settings": settings})
+    await repo.insert_plan("composio-plan", "alex", [{"action_id": "write", "type": "create_event", "params": params}])
+    await repo.approve_plan("composio-plan", "alex")
+
+    async def require(user_id, provider):
+        saved = await repo.get_connection(user_id, provider)
+        return ConnectionState(provider, "active", saved["composio_account_id"], saved["secret"]["settings"])
+
+    monkeypatch.setattr(dispatcher.connections, "require_connection", AsyncMock(side_effect=require))
+    monkeypatch.setattr(dispatcher.calendar, "list_calendars", AsyncMock(return_value=ReadBatch(records=[
+        CalendarOption("study@example.edu", "Study", "ca_calendar", writable=True),
+    ])))
+    monkeypatch.setattr(dispatcher.calendar, "fetch_calendar_events", AsyncMock(return_value=ReadBatch()))
+
+    async def create(*args, **kwargs):
+        await asyncio.sleep(.02)
+        return ToolResult({"response_data": {"id": "created-event",
+                          "htmlLink": "https://calendar.google.com/calendar/event?eid=fixture"}}, "log_db_fixture")
+
+    execute = AsyncMock(side_effect=create)
+    monkeypatch.setattr(dispatcher.runtime, "execute", execute)
+    request = ActionRequest(user_id="alex", plan_id="composio-plan", action_id="write", type="create_event",
+                            params={"account_id": "unreviewed", "title": "Must not execute"})
+    return SimpleNamespace(dispatcher=dispatcher, execute=execute, request=request)
+
+
+async def test_composio_concurrent_dispatch_uses_one_durable_claim_and_done_replays(composio_execution):
+    setup = composio_execution
+    results = await asyncio.gather(*(setup.dispatcher.execute_approved_action(setup.request) for _ in range(8)))
+    assert any(result.ok for result in results) and setup.execute.await_count == 1
+    assert all(result.data["execution_status"] in {"running", "succeeded"} for result in results)
+    executions = await repo.list_action_executions("composio-plan", "alex")
+    assert len(executions) == 1
+    saved = executions[0]
+    assert saved["status"] == "succeeded" and saved["completed_at"] is not None
+    assert saved["result"]["event_id"] == "created-event" and saved["result"]["log_id"] == "log_db_fixture"
+    assert "Must not execute" not in str(saved["result"])
+    assert setup.execute.call_args.args[3]["summary"] == "[Margin] Study physics"
+    assert await repo.update_plan_status("composio-plan", "alex", "done")
+    setup.dispatcher.connections.require_connection.side_effect = AssertionError("Replay must not contact provider")
+    replay = await setup.dispatcher.execute_approved_action(setup.request)
+    assert replay.ok and replay.data == saved["result"]
+    assert setup.execute.await_count == 1
+
+
+async def test_composio_unknown_receipt_survives_replay_and_blocks_plan_completion(composio_execution):
+    from integrations.composio.models import IntegrationError
+
+    setup = composio_execution
+    setup.execute.side_effect = IntegrationError("OUTCOME_UNKNOWN", "gcal", may_have_written=True, log_id="log_timeout")
+    result = await setup.dispatcher.execute_approved_action(setup.request)
+    assert not result.ok and result.error == "OUTCOME_UNKNOWN"
+    saved = await repo.get_action_execution("composio-plan", "write", "alex")
+    assert saved["status"] == "unknown" and saved["completed_at"] is None
+    assert saved["result"]["log_id"] == "log_timeout"
+    assert not await repo.update_plan_status("composio-plan", "alex", "done")
+    replay = await setup.dispatcher.execute_approved_action(setup.request)
+    assert replay.error == "OUTCOME_UNKNOWN" and replay.data == saved["result"]
+    setup.execute.assert_awaited_once()
+
+
+async def test_composio_receipt_failure_stores_unknown_with_created_id(composio_execution, monkeypatch):
+    setup = composio_execution
+    finish = repo.finish_action_execution
+
+    async def interrupted_success(*args, **kwargs):
+        if kwargs["status"] == "succeeded":
+            raise psycopg.OperationalError("Simulated receipt transaction failure")
+        await finish(*args, **kwargs)
+
+    monkeypatch.setattr(repo, "finish_action_execution", interrupted_success)
+    result = await setup.dispatcher.execute_approved_action(setup.request)
+    assert not result.ok and result.error == "RECEIPT_UNAVAILABLE"
+    saved = await repo.get_action_execution("composio-plan", "write", "alex")
+    assert saved["status"] == "unknown" and saved["result"]["event_id"] == "created-event"
+    assert saved["result"]["remote_outcome"] == "succeeded"
+    assert not await repo.update_plan_status("composio-plan", "alex", "done")
+    replay = await setup.dispatcher.execute_approved_action(setup.request)
+    assert replay.error == "RECEIPT_UNAVAILABLE"
+    setup.execute.assert_awaited_once()
+
+
+async def test_composio_crashed_running_claim_and_other_owner_cannot_dispatch(composio_execution):
+    from shared.protocol import ActionRequest
+
+    setup = composio_execution
+    forged = ActionRequest(**dict(setup.request.model_dump(), user_id="other"))
+    assert (await setup.dispatcher.execute_approved_action(forged)).error == "INVALID_ACTION"
+    assert await repo.claim_action_execution("composio-plan", "write", "alex")
+    result = await setup.dispatcher.execute_approved_action(setup.request)
+    assert result.error == "EXECUTION_RUNNING" and result.data["execution_status"] == "running"
+    assert not await repo.update_plan_status("composio-plan", "alex", "done")
+    setup.execute.assert_not_awaited()
+
+
 async def test_canvas_connect_encrypts_feed_and_gather_uses_actual_cache(monkeypatch):
     import re
     import httpx

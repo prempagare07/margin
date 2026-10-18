@@ -119,6 +119,7 @@ async def _dispatch(phone: str, text: str) -> None:
 @app.get("/connected", response_class=HTMLResponse)
 async def connected() -> HTMLResponse:
     return HTMLResponse(
-        "<html><body><h2>Connected!</h2>"
-        "<p>You can close this tab and return to ASI:One.</p></body></html>"
+        "<html><body><h2>Return to Margin</h2>"
+        "<p>If you completed authorization, return to ASI:One and select "
+        "‘I've connected’ so Margin can verify your account.</p></body></html>"
     )
