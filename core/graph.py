@@ -650,7 +650,10 @@ async def execute_node(state: GraphState) -> dict:
             "error": None if action_result.ok else (action_result.error or "ACTION_FAILED"),
         })
 
-    await approval.mark_done(plan_id, user_id)
+    try:
+        await asyncio.wait_for(approval.mark_done(plan_id, user_id), timeout=12)
+    except Exception:
+        pass  # DB hiccup — don't block the done card
 
     if channel == "asi1":
         await ctx.send(sender, done_card(results))

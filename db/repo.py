@@ -41,8 +41,8 @@ async def get_pool() -> AsyncConnectionPool:
         if not dsn:
             raise RuntimeError("DATABASE_URL is required")
         pool = AsyncConnectionPool(
-            dsn, open=False, min_size=1, max_size=4, timeout=10,
-            reconnect_timeout=10,
+            dsn, open=False, min_size=1, max_size=4, timeout=8,
+            reconnect_timeout=8,
             kwargs={
                 "row_factory": dict_row,
                 "connect_timeout": 5,
