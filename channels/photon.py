@@ -122,13 +122,25 @@ class PhotonCtx:
 async def handle_inbound(phone: str, text: str, user_id: str | None = None) -> None:
     """Dispatch an inbound Photon message through the graph.
 
-    user_id defaults to phone when we don't have an ASI:One address yet
-    (Photon-only users who haven't opened ASI:One).
+    Only proceeds if the phone number is verified in the DB. This prevents
+    spoofed inbound SMS from accessing another user's data.
     """
     from core import graph
     from core.chat import parse_selection
 
-    uid = user_id or phone
+    # Resolve user_id from verified phone — never trust caller-supplied uid
+    if user_id is None:
+        try:
+            from db import repo
+            row = await repo.get_user_by_phone(phone)
+            uid = row["user_id"] if row else None
+        except Exception:
+            uid = None
+        if not uid:
+            logger.warning("photon: unverified phone %s — dropping message", phone)
+            return
+    else:
+        uid = user_id
     selection = await parse_selection(text)
 
     ctx = PhotonCtx(phone)

@@ -133,7 +133,7 @@ async def mark_done(plan_id: str, user_id: str) -> None:
     r = await _repo()
     if r is None:
         p = _mem_plans.get(plan_id)
-        if p:
+        if p and p["user_id"] == user_id:
             p["status"] = "done"
             p["executed_at"] = datetime.now(timezone.utc).isoformat()
         return
