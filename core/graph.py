@@ -155,12 +155,10 @@ async def gather_node(state: GraphState) -> dict:
         if _fake_specialists():
             items, slots, gather_error = _fake_items(), _fake_slots(), None
         else:
-            items, slots, gather_error = await _gather_from_specialists(
-                state["ctx"], state["user_id"], state["sender"]
-            )
+            items, slots, gather_error = await _gather_direct(state["user_id"])
         if s:
             s.set_data("item_count", len(items))
-        logger.info("gather: item_count=%d", len(items))
+        logger.info("gather: item_count=%d error=%s", len(items), gather_error)
         return {"items": items, "free_slots": slots, "gather_error": gather_error}
 
 
@@ -169,71 +167,157 @@ def _is_agent_ctx(ctx: Any) -> bool:
     return not hasattr(ctx, "_phone")  # PhotonCtx has _phone; real Context does not
 
 
-async def _gather_from_specialists(
-    ctx: Any, user_id: str, sender: str,
-) -> tuple[list[dict], list[list[str]], str | None]:
-    """Send GatherRequest to all 4 specialists; collect results with 15s timeout."""
-    import asyncio
+async def _gather_direct(user_id: str) -> tuple[list[dict], list[list[str]], str | None]:
+    """Call all specialist gather logic in-process — no mailbox round-trips."""
     from datetime import datetime, timedelta, timezone
     from uuid import uuid4
-    from shared.protocol import GatherRequest
-
-    # Load addresses from file (written by bureau._print_addresses)
-    addresses = _load_addresses()
-    if not addresses:
-        logger.warning("gather: no specialist addresses")
-        return [], [], "CALENDAR_UNAVAILABLE"
+    from shared.protocol import GatherRequest, GatherResult
 
     now = datetime.now(timezone.utc)
-    window_start = now.isoformat()
-    window_end = (now + timedelta(days=7)).isoformat()
-
-    specialist_keys = ["margin-academic", "margin-inbox", "margin-planner", "margin-life"]
-    futures: dict[str, tuple[str, asyncio.Future]] = {}
-    planner_error: str | None = (
-        None if addresses.get("margin-planner") else "SPECIALIST_UNAVAILABLE"
+    req = GatherRequest(
+        request_id=str(uuid4()),
+        user_id=user_id,
+        window_start=now.isoformat(),
+        window_end=(now + timedelta(days=7)).isoformat(),
     )
 
-    for key in specialist_keys:
-        addr = addresses.get(key)
-        if not addr:
+    results = await asyncio.gather(
+        _gather_academic(req),
+        _gather_inbox(req),
+        _gather_planner(req),
+        _gather_life(req),
+        return_exceptions=True,
+    )
+
+    labels = ["academic", "inbox", "planner", "life"]
+    all_items: list[dict] = []
+    all_slots: list[list[str]] = []
+    planner_error: str | None = None
+
+    for label, result in zip(labels, results):
+        if isinstance(result, Exception):
+            logger.warning("gather_direct: %s raised %s", label, result)
+            if label == "planner":
+                planner_error = str(result)
             continue
-        req_id = str(uuid4())
-        fut = gather_bus.register(req_id)
-        futures[req_id] = (key, fut)
-        try:
-            await ctx.send(addr, GatherRequest(
-                request_id=req_id,
-                user_id=user_id,
-                window_start=window_start,
-                window_end=window_end,
-            ))
-        except Exception as exc:
-            logger.warning("gather: failed to send to %s: %s", key, exc)
-            gather_bus.resolve(req_id, None)
-
-    all_items: list = []
-    all_slots: list = []
-
-    for req_id, (key, fut) in futures.items():
-        try:
-            result = await asyncio.wait_for(fut, timeout=15)
-            if result and not result.error:
-                all_items.extend(
-                    item.model_dump() if hasattr(item, "model_dump") else dict(item)
-                    for item in (result.items or [])
-                )
-                all_slots.extend(result.free_slots or [])
-            elif result and result.error:
-                logger.warning("gather: specialist error: %s", result.error)
-                if key == "margin-planner":
-                    planner_error = result.error
-        except asyncio.TimeoutError:
-            logger.warning("gather: specialist timed out: %s", key)
-            if key == "margin-planner":
-                planner_error = "TIMEOUT"
+        if result.error:
+            logger.warning("gather_direct: %s error=%s", label, result.error)
+            if label == "planner":
+                planner_error = result.error
+        all_items.extend(
+            item.model_dump() if hasattr(item, "model_dump") else dict(item)
+            for item in (result.items or [])
+        )
+        all_slots.extend(result.free_slots or [])
 
     return all_items, all_slots, planner_error
+
+
+async def _gather_academic(req: Any) -> Any:
+    from shared.protocol import GatherResult
+    try:
+        from integrations import canvas_client
+        return await canvas_client.gather(req)
+    except Exception as exc:
+        logger.warning("gather_direct: academic: %s", exc)
+        return GatherResult(request_id=req.request_id, agent="academic", error=str(exc))
+
+
+async def _gather_inbox(req: Any) -> Any:
+    from shared.protocol import GatherResult, Item
+    from integrations.composio_tools import (
+        fetch_gmail_messages, fetch_slack_messages,
+        cache_items, filter_items, cached_gather_result,
+        IntegrationError, item_id as make_item_id,
+    )
+
+    def _msg_to_item(msg, uid: str) -> Item:
+        source = "slack" if msg.provider == "slack" else "gmail"
+        return Item(
+            item_id=make_item_id(uid, source, msg.source_id),
+            user_id=uid,
+            kind="slack_action" if source == "slack" else "email_action",
+            title=msg.subject or "(no subject)",
+            source=source,
+            source_id=msg.source_id,
+            source_url=getattr(msg, "source_url", None),
+            quote=(msg.body[:200].strip() if getattr(msg, "body", None) else None),
+            status="open",
+        )
+
+    items: list = []
+    for fetch_fn, provider in (
+        (fetch_gmail_messages, "gmail"),
+        (fetch_slack_messages, "slack"),
+    ):
+        try:
+            batch = await fetch_fn(req.user_id, since=req.window_start, until=req.window_end)
+            if batch.records:
+                acct = batch.records[0].account_id
+                raw = [_msg_to_item(m, req.user_id) for m in batch.records]
+                cached = await cache_items(req.user_id, provider, acct, raw)
+                items.extend(filter_items(cached, start=req.window_start, end=req.window_end))
+        except IntegrationError as exc:
+            fallback = await cached_gather_result(req, provider, error=exc)
+            items.extend(fallback.items or [])
+        except Exception as exc:
+            logger.warning("gather_direct: inbox %s: %s", provider, exc)
+    return GatherResult(request_id=req.request_id, agent="inbox", items=items)
+
+
+async def _gather_planner(req: Any) -> Any:
+    from shared.protocol import GatherResult
+    from integrations.composio_tools import (
+        fetch_calendar_events, compute_free_slots,
+        cache_items, filter_items, cached_gather_result,
+        IntegrationError,
+    )
+    from db import repo
+    try:
+        batch = await fetch_calendar_events(req.user_id, start=req.window_start, end=req.window_end)
+        connection = await repo.get_connection(req.user_id, "gcal")
+        account_id = (connection or {}).get("composio_account_id")
+        if not account_id:
+            raise IntegrationError("NOT_CONNECTED", "gcal")
+        raw = [r.item if hasattr(r, "item") else r for r in batch.records]
+        items = await cache_items(req.user_id, "gcal", account_id, raw)
+        items = filter_items(items, start=req.window_start, end=req.window_end)
+        free_slots = (
+            compute_free_slots(batch.records, start=req.window_start,
+                               end=req.window_end, tz="America/Phoenix")
+            if batch.complete else []
+        )
+        return GatherResult(request_id=req.request_id, agent="planner",
+                            items=items, free_slots=free_slots)
+    except IntegrationError as exc:
+        result = await cached_gather_result(req, "gcal", error=exc)
+        return result
+    except Exception as exc:
+        logger.warning("gather_direct: planner: %s", exc)
+        return GatherResult(request_id=req.request_id, agent="planner", error=str(exc))
+
+
+async def _gather_life(req: Any) -> Any:
+    from shared.protocol import GatherResult
+    items: list = []
+    errors: list[str] = []
+    try:
+        from integrations.events_feed import fetch_events
+        items.extend(await fetch_events(req.user_id, req.window_end))
+    except Exception as exc:
+        logger.warning("gather_direct: life events: %s", exc)
+        errors.append("Campus events unavailable.")
+    try:
+        from integrations.plaid_sandbox import fetch_bills, sync_transactions, PlaidError
+        items.extend(await fetch_bills(req.user_id))
+        synced = await sync_transactions(req.user_id)
+        if not synced.ready:
+            errors.append("Bank transactions still updating.")
+    except Exception as exc:
+        logger.warning("gather_direct: life plaid: %s", exc)
+        errors.append("Bank transactions unavailable.")
+    return GatherResult(request_id=req.request_id, agent="life", items=items,
+                        error=" ".join(errors) or None)
 
 
 def _load_addresses() -> dict:
