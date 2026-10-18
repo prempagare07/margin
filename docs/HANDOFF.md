@@ -2,10 +2,11 @@
 
 This file is the source of truth for the interface boundary between Prem's code and Alex's code. Update it whenever an interface changes; mention the update in your commit message.
 
-Alex's step 2 update (October 17, 2026): `Item` now carries event timing and
-location. The database signatures below replace the older `plans.rows` /
-`plans.results` interface and match the final `db/schema.sql`. These are the
-contracts for step 3; `db/repo.py` is still a placeholder.
+Alex's steps 2–3 update (October 17, 2026): `Item` carries event timing and
+location, and `db/repo.py` now implements the database helpers below against
+the final `db/schema.sql`. The older `plans.rows` / `plans.results` interface
+does not apply. Phone verification now also requires the submitted code's hash;
+the database compares it and checks expiry atomically.
 
 ---
 
@@ -52,7 +53,7 @@ await send_text(user_id, "You've spent 70% of your weekly budget.")
 
 ### `db.repo` — async database helpers
 
-Alex will implement these functions in `db.repo`; Prem's approval, graph, and
+These functions are implemented in `db.repo`; Prem's approval, graph, and
 scheduler modules should target this interface. Database rows are returned as
 dictionaries. Every lookup or mutation of a user's plan, execution, or nudge is
 scoped by `user_id`, not just its object ID.
@@ -61,15 +62,25 @@ scoped by `user_id`, not just its object ID.
 from datetime import datetime
 from typing import Literal
 from psycopg_pool import AsyncConnectionPool
+from shared.protocol import GatherResult
 
-# Connection pool
-pool: AsyncConnectionPool  # pool lifecycle is implemented in step 3
+# Connection pool: one per event loop, opened lazily; no module-global pool
+async def get_pool() -> AsyncConnectionPool: ...
+async def close_pool() -> None: ...
 
 # User management
 async def upsert_user(user_id: str, **kwargs) -> None: ...
 async def get_user(user_id: str) -> dict | None: ...
+async def get_user_by_phone(phone: str) -> dict | None: ...  # verified numbers only
 async def set_phone(user_id: str, phone: str, code_hash: str, expires: datetime) -> None: ...
-async def verify_phone(user_id: str) -> None: ...
+async def verify_phone(user_id: str, code_hash: str) -> bool: ...
+
+# Connected accounts; private feed URLs belong inside secret
+async def save_connection(
+    user_id: str, provider: str, *, composio_account_id: str | None = None,
+    secret: dict | None = None, status: str = "active",
+) -> None: ...
+async def get_connection(user_id: str, provider: str) -> dict | None: ...
 
 # Plans (needed by core/approval.py)
 async def insert_plan(plan_id: str, user_id: str, actions: list[dict]) -> None: ...
@@ -118,12 +129,70 @@ async def update_nudge(nudge_id: str, user_id: str, reply: str, action_taken: st
 async def last_items_by_source(user_id: str, source: str) -> list[dict]: ...
 async def items_in_window(user_id: str, start: str, end: str) -> list[dict]: ...
 async def upsert_items(items: list[dict]) -> None: ...
+async def cached_gather_result(
+    request_id: str, agent: str, user_id: str, sources: list[str],
+    window_start: str, window_end: str, *, error: str,
+) -> GatherResult: ...
 
 # Budget (needed by core/graph.py → cards)
 async def get_budget(user_id: str) -> dict | None: ...
 async def save_budget(user_id: str, monthly_income: float, savings_goal: float, weekly_cap: float | None) -> None: ...
+async def get_bills(user_id: str) -> list[dict]: ...
+async def save_bill(user_id: str, name: str, amount: float, due_day: int) -> None: ...
 async def safe_to_spend(user_id: str) -> float: ...
 ```
+
+Pool, identity, and connection semantics:
+
+- Entry points load `.env` before calling the helpers. Pools use `DATABASE_URL`,
+  UTC sessions, a 10-second acquisition/statement timeout, and up to four
+  connections per event loop. Each agent loop and the web loop must call
+  `await repo.close_pool()` during shutdown. Importing the module does not open
+  a connection. Callers can use `async with (await repo.get_pool()).connection()`
+  for additional queries; do not share an async pool across the agent threads.
+- Create the user first with `upsert_user`. Optional profile fields are `tz`,
+  `plan`, `pro_until`, `photon_user_id`, `photon_space_id`, and `text_opted_in_at`.
+  Omitted fields retain existing values. The trusted payment flow owns changes
+  to paid-plan fields; never pass unfiltered form or model output as kwargs.
+- `set_phone` accepts E.164 numbers and resets verification/opt-in. It stores a
+  hash, never a plain code. `verify_phone(user_id, code_hash)` returns `True`
+  only if that hash matches the current unexpired challenge, then clears the
+  challenge. The caller hashes the submitted code using the same scheme as
+  when issuing it. Expired challenges are cleared; a changed challenge cannot
+  be verified using the old hash. Code issuance, rate limiting, and consent UI
+  remain the phone adapter's responsibility.
+- Connection providers are `canvas`, `gmail`, `gcal`, `slack`, and `plaid`.
+  `save_connection` replaces the snapshot: `None` clears an optional field.
+  Fernet uses `TOKEN_ENCRYPTION_KEY`; private Canvas feed URLs go in
+  `secret={"ical_url": ...}` and tokens in `secret={"token": ...}`.
+  `get_connection` returns decrypted JSON under `secret`, never `secret_enc`.
+  Keep this result out of cards, prompts, and logs. Invalid ciphertext/key
+  raises an error rather than returning an apparently usable connection.
+- Missing reads return `None` (or an empty list). Invalid inputs and invalid
+  transitions raise `ValueError`; missing targets for required mutations raise
+  `LookupError`. Database/constraint errors propagate. Writes roll back on
+  errors and are not automatically retried or replaced with in-memory state.
+  Callers decide when to show a connection/error card or use cached reads.
+
+Item and cache semantics:
+
+- Item reads return UTC ISO strings for `due_at`, `starts_at`, `ends_at`, and
+  `fetched_at`, plus numeric `cost_usd`, ready for `Item` construction. Other
+  database dictionaries retain Python `datetime` / `Decimal` values.
+- Upserts use `(user_id, source, source_id)` and retain the original `item_id`,
+  so existing brief/nudge references remain valid. Incoming IDs must be globally
+  unique for new items. A source refresh preserves local `done` / `snoozed`
+  statuses. Each batch is all-or-nothing. Incoming snapshots replace optional
+  source fields, and a successful refresh sets `fetched_at` to database time.
+- Windows are half-open `[start, end)`: include deadlines in the window and
+  overlapping events (including zero-length events at the start). An event
+  ending exactly at the window start is excluded. Undated items remain
+  available through `last_items_by_source`; window queries exclude them.
+- `cached_gather_result` filters the window by the requested sources, includes
+  the supplied error, and sets `stale_since` to the oldest returned fetch time.
+  An empty cache has no staleness timestamp and still includes the error.
+  Cached events do not establish free slots; Planner must recompute those.
+  Source-removal/snapshot reconciliation is left to the integration layer.
 
 Plan and execution semantics:
 
@@ -147,6 +216,9 @@ Plan and execution semantics:
   `succeeded`, `failed`, or `unknown` executions; reconcile uncertain outcomes
   before deciding on another attempt. A database claim alone cannot guarantee
   exactly-once effects at an external provider.
+- `finish_action_execution` accepts a claimed `running` execution, or resolves
+  an `unknown` execution after provider reconciliation. An identical terminal
+  receipt is an idempotent no-op; a different terminal receipt is rejected.
 - `update_plan_status` returns whether a transition occurred: only `pending` may
   become `cancelled`; only `approved` may become `done`, once every action is
   `succeeded` or `failed`. The latter sets `executed_at`. Keep plans with pending,
@@ -169,6 +241,54 @@ Nudge semantics:
   Set `sent_at` only after a successful send. `get_pending_nudge` selects the
   latest sent, unanswered nudge with reply options for that user; it must not
   return a future reminder that has not been sent.
+- `due_nudges` is for the trusted scheduler across all users. It does not claim
+  messages for delivery: use one dispatch worker or a provider idempotency key
+  based on `nudge_id`. Deduplicating stored nudges alone does not prevent two
+  concurrent senders from sending the same message.
+
+Budget semantics:
+
+- `safe_to_spend` uses the existing `public.flexible_spent_this_month` function,
+  with its posted, nonremoved USD expense filters. All month/day calculations
+  use America/Phoenix, matching the schema. Bills due today or later are still
+  reserved; a day-31 bill clamps to the month's final day.
+- Weeks left is `max(1, inclusive_days_remaining / 7)`, retaining fractional
+  weeks as in Alex's plan. A zero weekly cap is honored. Results are rounded to
+  cents; negative values indicate a deficit. Missing budget settings return
+  `0.0`; callers can use `get_budget` to distinguish this from a configured zero.
+
+Prem wiring notes:
+
+- `core/approval.py` currently has its own database pool and persistence path.
+  Migrate that complete path to these helpers together: `insert_plan` stores
+  only the plan; `approve_plan` creates execution rows atomically with approval.
+  Do not also create those execution rows when inserting the plan.
+- Map approval's `claim_action` to `claim_action_execution`, `complete_action`
+  to `finish_action_execution`, and cancel/done transitions to
+  `update_plan_status`. Preserve the user and plan IDs throughout. The helpers
+  are ready, but the caller wiring is a separate integration change.
+
+Database helper tests:
+
+`python -m pytest -q` runs pure tests and skips database tests unless
+`TEST_DATABASE_URL` is explicitly set. The database suite accepts only a
+localhost database named `margin_test`; it never loads `.env`. It **truncates
+test data between cases**. Use a disposable container, for example:
+
+```sh
+docker run --detach --rm --name margin-db-tests \
+  -e POSTGRES_DB=margin_test -e POSTGRES_USER=margin_test \
+  -e POSTGRES_PASSWORD=margin_test -p 127.0.0.1:55432:5432 postgres:16
+# Wait until: docker exec margin-db-tests pg_isready -U margin_test
+TEST_DATABASE_URL=postgresql://margin_test:margin_test@127.0.0.1:55432/margin_test \
+  .venv/bin/python -m pytest -q
+docker stop margin-db-tests
+```
+
+The suite loads the application tables, constraints, indexes, and monthly
+spending function from `db/schema.sql`. PostgreSQL-only tests omit TimescaleDB
+hypertable/continuous-aggregate setup, which these helpers do not modify. Do
+not point these tests at Tiger Data or run `scripts/db_init.py` to test helpers.
 
 ### `shared/protocol.py` — message contract
 
@@ -243,7 +363,7 @@ Alex's schema is the source of truth. Key changes Prem's code must handle:
 
 ## Open questions / blockers
 
-- `db/repo.py` is still empty. The signatures and transition rules above are the step 3 implementation target, not functions that callers can import yet.
+- `db/repo.py` is implemented and has local PostgreSQL integration tests. The existing Tiger Data schema is unchanged.
 - Prem must consume the updated protocol and database interface in the orchestrator, approval flow, and scheduler. This file records Alex's handoff; it does not claim Prem's runtime is already updated.
 - Step 1 verified read access through Composio for Gmail, Calendar, and Slack. Canvas iCal and the ASU campus-events calendar feed also parsed successfully. Credential presence alone is not a connection check for other providers.
 - Plaid, Stripe, Photon webhook verification, and deployment readiness belong to later setup and implementation checks.
