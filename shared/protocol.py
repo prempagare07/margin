@@ -11,6 +11,9 @@ class Item(Model):
     title: str
     course: Optional[str] = None
     due_at: Optional[str] = None # ISO 8601, UTC
+    starts_at: Optional[str] = None # ISO 8601, UTC; separate from a deadline
+    ends_at: Optional[str] = None # May equal starts_at for a zero-length event
+    location: Optional[str] = None
     est_hours: Optional[float] = None
     source: Literal["canvas", "canvas_ical", "gmail", "slack", "gcal",
     "sundevilsync", "plaid"]
