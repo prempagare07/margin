@@ -14,12 +14,14 @@ from pydantic import BaseModel
 from core import approval, gather as gather_bus
 from core.observability import aspan
 from core.cards import (
+    app_connection_card,
     connect_form,
     done as done_card,
     error_card,
     priorities_carousel,
     review as review_card,
     upgrade_card,
+    welcome_card,
 )
 from core.chat import send_text
 from core.llm import fast, plan as llm_plan
@@ -690,30 +692,21 @@ async def connect_node(state: GraphState) -> dict:
         logger.warning("connect: account persistence failed")
         await send_text(ctx, sender, "Your account details could not be saved. Please try the Connect form again.")
         return {}
+    photon_number = os.getenv("PHOTON_SENDING_NUMBER", "")
     if result.phone_verified:
-        await send_text(ctx, sender, "Your account and budget are saved. Your phone is already linked.")
+        phone_msg = "Your account and budget are saved. Your phone is already linked — you'll get the 7 AM brief by text."
     else:
-        destination = "Margin's Photon number"
-        configured_number = os.getenv("PHOTON_SENDING_NUMBER", "")
-        if configured_number:
-            try:
-                destination = onboarding.phone_number(configured_number)
-            except onboarding.InvalidSubmission:
-                pass
-        await send_text(ctx, sender,
-            "Your account and budget are saved. To finish linking your phone, send the following "
-            f"message from that phone to {destination} within 10 minutes:\n\n"
+        dest = photon_number if photon_number else "Margin's SMS number"
+        phone_msg = (
+            f"Account saved! To get your 7 AM morning brief by text (daily action items from Canvas, Gmail & Slack), "
+            f"text this from your phone to {dest} within 10 minutes:\n\n"
             f"LINK {result.link_code}\n\n"
-            "Your phone will be linked after Margin receives that message.")
-    await _send_link_card(ctx, sender, sender)
-    return {}
+            "Once received, Margin will confirm and start sending you daily briefs and nudges."
+        )
+    await send_text(ctx, sender, phone_msg)
 
-
-async def linked_node(state: GraphState) -> dict:
-    await send_text(
-        state["ctx"], state["sender"],
-        "Finish connecting in the browser, then tap I've connected everything.",
-    )
+    # Walk through app connections one at a time
+    await _send_next_app_card(ctx, sender, state["user_id"], _ALL_APPS)
     return {}
 
 
@@ -742,6 +735,49 @@ async def check_links_node(state: GraphState) -> dict:
     return {}
 
 
+_ALL_APPS = ["Canvas", "Gmail", "Google Calendar", "Slack"]
+
+_APP_DESCRIPTIONS = {
+    "Canvas": "Pull your assignments and deadlines into the 7 AM brief.",
+    "Gmail": "Surface action items from TA emails and club announcements.",
+    "Google Calendar": "Find free slots and block study time — you approve every event.",
+    "Slack": "Catch action items from club channels and group chats.",
+}
+
+
+async def _send_next_app_card(ctx, sender: str, user_id: str, apps: list[str]) -> None:
+    """Show a connect card for the first app in the list, or 'you're set' if empty."""
+    if not apps:
+        await send_text(ctx, sender,
+            "You're all set! Say 'plan my week' to block time for your assignments, "
+            "or ask me anything about your schedule.")
+        return
+
+    app_name = apps[0]
+    remaining = apps[1:]
+    base = os.environ.get("PUBLIC_BASE_URL", "https://inappmargin.vip")
+    url = ""
+
+    if app_name == "Canvas":
+        try:
+            from web.connect_state import make_state
+            url = f"{base}/connect/canvas?state={make_state(user_id)}"
+        except Exception:
+            url = f"{base}/connect/canvas"
+    else:
+        _composio_id = {"Gmail": "gmail", "Google Calendar": "googlecalendar", "Slack": "slack"}
+        cid = _composio_id.get(app_name)
+        if cid:
+            try:
+                from integrations.composio_tools import connect_link
+                url = await connect_link(user_id, cid)
+            except Exception:
+                pass
+
+    desc = _APP_DESCRIPTIONS.get(app_name, "")
+    await ctx.send(sender, app_connection_card(app_name, desc, url, remaining))
+
+
 async def chat_node(state: GraphState) -> dict:
     ctx = state["ctx"]
     sender = state["sender"]
@@ -749,10 +785,23 @@ async def chat_node(state: GraphState) -> dict:
     text = state["text"].lower().strip()
     logger.info("chat: intent=%s", state.get("intent"))
 
-    # Greetings → show the Connect onboarding form (ASI:One) or prompt (Photon)
+    # App linked or skipped → show next app in the sequence
+    if state.get("intent") in ("linked", "skip_app"):
+        sel = state.get("selection") or {}
+        app = sel.get("app", "")
+        remaining = sel.get("remaining") or []
+        if app and state.get("intent") == "linked":
+            await send_text(ctx, sender, f"{app} connected ✓")
+        elif app:
+            await send_text(ctx, sender, f"Skipping {app} for now.")
+        await _send_next_app_card(ctx, sender, state["user_id"], remaining)
+        return {}
+
+    # Greetings → welcome carousel then connect form (ASI:One) or prompt (Photon)
     greetings = {"hi", "hello", "hey", "start", "help", "get started", "setup", "set up"}
     if text in greetings or text == "":
         if channel == "asi1":
+            await ctx.send(sender, welcome_card())
             await ctx.send(sender, connect_form())
         else:
             await send_text(ctx, sender,
@@ -788,9 +837,10 @@ async def chat_node(state: GraphState) -> dict:
 
 def _route(state: GraphState) -> str:
     routes: dict[str, str] = {
-        "connect":    "connect",
+        "connect":     "connect",
         "check_links": "check_links",
-        "linked":     "linked",
+        "linked":      "chat",
+        "skip_app":    "chat",
         "plan_week":  "gather",
         "approve":    "execute",
         "cancel":     "cancel",
@@ -810,18 +860,17 @@ def _route(state: GraphState) -> str:
 def _build() -> Any:
     g = StateGraph(GraphState)
     for name, fn in [
-        ("classify",   classify_node),
-        ("connect",    connect_node),
+        ("classify",    classify_node),
+        ("connect",     connect_node),
         ("check_links", check_links_node),
-        ("linked",     linked_node),
-        ("gather",     gather_node),
-        ("plan_week",  plan_week_node),
-        ("store_plan", store_plan_node),
-        ("execute",    execute_node),
-        ("cancel",     cancel_node),
-        ("priorities", priorities_node),
-        ("upgrade",    upgrade_node),
-        ("chat",       chat_node),
+        ("gather",      gather_node),
+        ("plan_week",   plan_week_node),
+        ("store_plan",  store_plan_node),
+        ("execute",     execute_node),
+        ("cancel",      cancel_node),
+        ("priorities",  priorities_node),
+        ("upgrade",     upgrade_node),
+        ("chat",        chat_node),
     ]:
         g.add_node(name, fn)
 
@@ -829,20 +878,19 @@ def _build() -> Any:
     g.add_conditional_edges(
         "classify", _route,
         {
-            "connect":    "connect",
+            "connect":     "connect",
             "check_links": "check_links",
-            "linked":     "linked",
-            "gather":     "gather",
-            "execute":    "execute",
-            "cancel":     "cancel",
-            "upgrade":    "upgrade",
-            "priorities": "priorities",
-            "chat":       "chat",
+            "gather":      "gather",
+            "execute":     "execute",
+            "cancel":      "cancel",
+            "upgrade":     "upgrade",
+            "priorities":  "priorities",
+            "chat":        "chat",
         },
     )
     g.add_edge("gather",     "plan_week")
     g.add_edge("plan_week",  "store_plan")
-    for terminal in ("connect", "check_links", "linked", "store_plan", "execute", "cancel", "priorities", "upgrade", "chat"):
+    for terminal in ("connect", "check_links", "store_plan", "execute", "cancel", "priorities", "upgrade", "chat"):
         g.add_edge(terminal, END)
 
     return g.compile()

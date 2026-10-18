@@ -117,8 +117,9 @@ async def save(user_id: str, selection: dict) -> OnboardingResult:
     cap = _money(fields.get("weekly_cap"), "Weekly cap")
     savings = _money(fields.get("savings_goal"), "Savings goal", Decimal(0))
     bills = _bills(fields.get("bills"))
-    # High entropy permits inbound possession checks without guessing a six-digit OTP.
-    code = secrets.token_urlsafe(24)
+    import random
+    import string as _string
+    code = "".join(random.choices(_string.ascii_uppercase + _string.digits, k=6))
     verified = await repo.save_onboarding(
         user_id, phone=phone, monthly_income=income, weekly_cap=cap,
         savings_goal=savings, bills=bills, code_hash=link_code_hash(code),

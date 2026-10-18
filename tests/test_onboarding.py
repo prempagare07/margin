@@ -52,7 +52,7 @@ async def test_connect_routes_without_llm_and_ignores_payload_identity_and_entit
     assert call.kwargs["bills"][1] == {"name": "Utilities", "amount": Decimal("65.25"), "due_day": 31}
     assert "plan" not in call.kwargs and "phone_verified" not in call.kwargs
     code = texts(ctx).split("LINK ")[1].split()[0]
-    assert len(code) == 32 and code not in call.kwargs["code_hash"]
+    assert len(code) == 6 and code not in call.kwargs["code_hash"]
     assert call.kwargs["code_hash"] == onboarding.link_code_hash(code)
     assert 590 < (call.kwargs["expires"] - datetime.now(timezone.utc)).total_seconds() <= 600
     assert "saved" in texts(ctx) and "+14805559999" in texts(ctx)

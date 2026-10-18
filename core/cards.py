@@ -57,6 +57,44 @@ def _local(iso_utc: str | None, tz: str) -> str:
 # Card builders
 # ---------------------------------------------------------------------------
 
+def welcome_card() -> ChatMessage:
+    """Welcome carousel shown on first greeting — explains what Margin does."""
+    payload = {
+        "title": "Welcome to Margin",
+        "items": [
+            {
+                "id": "feat-brief",
+                "title": "Daily 7 AM Brief",
+                "subtitle": "Get lettered action items (A, B, C…) from Canvas, Gmail, and Slack — straight to your phone every morning.",
+                "badges": ["SMS"],
+                "primary_cta": {"label": "Get started", "selection": {"action": "connect"}},
+            },
+            {
+                "id": "feat-planner",
+                "title": "Week Planner",
+                "subtitle": "Margin finds your free slots and blocks study time on Google Calendar — after you approve every event.",
+                "badges": ["Calendar"],
+                "primary_cta": {"label": "Get started", "selection": {"action": "connect"}},
+            },
+            {
+                "id": "feat-inbox",
+                "title": "Inbox Triage",
+                "subtitle": "Surfaces action items from Gmail and Slack as interactive cards so nothing falls through the cracks.",
+                "badges": ["Gmail", "Slack"],
+                "primary_cta": {"label": "Get started", "selection": {"action": "connect"}},
+            },
+            {
+                "id": "feat-budget",
+                "title": "Budget Tracker",
+                "subtitle": "One number: how much is safe to spend this week, updated from your Plaid transactions.",
+                "badges": ["Plaid"],
+                "primary_cta": {"label": "Get started", "selection": {"action": "connect"}},
+            },
+        ],
+    }
+    return card_message("carousel", payload, "Hi! I'm Margin — your AI chief of staff for college. Here's what I can do:")
+
+
 def connect_form() -> ChatMessage:
     """Onboarding form: phone + budget fields."""
     payload = {
@@ -256,6 +294,47 @@ def upgrade_card() -> ChatMessage:
         }
     }
     return card_message("custom", payload, "Choose a plan:")
+
+
+def app_connection_card(
+    app_name: str,
+    description: str,
+    connect_url: str,
+    remaining: list[str],
+) -> ChatMessage:
+    """Single-app connection card with a Skip option.
+
+    remaining: list of app names still to be shown after this one.
+    """
+    connect_action: dict = {
+        "selection": {"action": "linked", "app": app_name, "remaining": remaining},
+    }
+    if connect_url:
+        connect_action["redirect"] = connect_url
+
+    payload = {
+        "root": {
+            "type": "section",
+            "title": f"Connect {app_name}",
+            "children": [
+                {"type": "text", "value": description, "style": "muted"},
+                {
+                    "type": "button",
+                    "label": f"Connect {app_name}",
+                    "primary": True,
+                    "action": connect_action,
+                },
+                {
+                    "type": "button",
+                    "label": "Skip for now →",
+                    "action": {
+                        "selection": {"action": "skip_app", "app": app_name, "remaining": remaining},
+                    },
+                },
+            ],
+        }
+    }
+    return card_message("custom", payload)
 
 
 def error_card(message: str, step: str = "") -> ChatMessage:
