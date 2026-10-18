@@ -641,11 +641,13 @@ async def handle(
     sender: str = "",
 ) -> None:
     """Single-turn orchestration. Sends all replies via ctx."""
+    import re as _re
+    clean_text = _re.sub(r"@\w+", "", text or "").strip()
     state: GraphState = {
         "ctx": ctx,
         "sender": sender,
         "user_id": user_id,
-        "text": text or "",
+        "text": clean_text,
         "channel": channel,
         "selection": selection,
         "intent": "",
