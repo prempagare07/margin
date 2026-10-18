@@ -129,6 +129,50 @@ async def test_connections_encrypted_and_scoped(monkeypatch):
         await repo.get_connection("alex", "canvas")
 
 
+async def test_canvas_connect_encrypts_feed_and_gather_uses_actual_cache(monkeypatch):
+    import re
+    import httpx
+    from fastapi import FastAPI
+    from integrations import canvas_client
+    from web.canvas_connect import router
+    from web.connect_state import make_state
+    from tests.test_canvas_client import ASSIGNMENT, FEED, ics, parse, request
+
+    monkeypatch.setenv("STATE_SIGNING_KEY", "local-test-signing-key-" * 3)
+    async def feed(url, user_id, **kwargs):
+        assert url == FEED
+        return parse(ics(ASSIGNMENT), user_id)
+    monkeypatch.setattr(canvas_client, "fetch_feed", feed)
+    app = FastAPI()
+    app.include_router(router)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="https://margin.test") as client:
+        token = make_state("new-student")
+        page = await client.get("/connect/canvas", params={"token": token})
+        csrf = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
+        result = await client.post("/connect/canvas", data={"token": token, "csrf": csrf, "ical_url": FEED})
+    assert result.status_code == 200 and "Canvas is connected" in result.text
+    saved = await repo.get_connection("new-student", "canvas")
+    assert saved["secret"] == {"ical_url": FEED}
+    assert await repo.get_connection("other", "canvas") is None
+    async with (await repo.get_pool()).connection() as conn:
+        raw = await (await conn.execute(
+            "SELECT secret_enc FROM public.connections WHERE user_id = %s", ("new-student",)
+        )).fetchone()
+    assert FEED.encode() not in bytes(raw["secret_enc"])
+    assert Fernet(os.environ["TOKEN_ENCRYPTION_KEY"].encode()).decrypt(bytes(raw["secret_enc"]))
+    gathered = await canvas_client.gather(request(user_id="new-student"))
+    assert gathered.error is None and len(gathered.items) == 1
+    item = gathered.items[0].model_dump()
+    item["status"] = "done"
+    await repo.upsert_items([item])
+    assert (await canvas_client.gather(request(user_id="new-student"))).items[0].status == "done"
+    async def unavailable(*args, **kwargs):
+        raise canvas_client.CanvasFeedError("offline")
+    monkeypatch.setattr(canvas_client, "fetch_feed", unavailable)
+    cached = await canvas_client.gather(request(user_id="new-student"))
+    assert cached.stale_since and cached.error and cached.items[0].status == "done"
+
+
 async def test_connection_snapshot_can_clear_secret_without_encryption_key(monkeypatch):
     await repo.save_connection("alex", "canvas", secret={"token": "example"})
     monkeypatch.delenv("TOKEN_ENCRYPTION_KEY")

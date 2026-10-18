@@ -12,7 +12,7 @@ load_dotenv()
 from uagents import Agent, Context
 
 from core.chat import make_chat_protocol, send_text
-from integrations.canvas_client import fetch_items
+from integrations import canvas_client
 from shared.protocol import ActionRequest, ActionResult, GatherRequest, GatherResult
 
 logger = logging.getLogger(__name__)
@@ -35,20 +35,7 @@ agent = Agent(
 @agent.on_message(GatherRequest)
 async def _on_gather(ctx: Context, sender: str, msg: GatherRequest) -> None:
     logger.info("academic: gather request from %s for user %s", sender, msg.user_id)
-    try:
-        items = await fetch_items(msg.user_id, msg.window_end)
-        result = GatherResult(
-            request_id=msg.request_id,
-            agent="academic",
-            items=items,
-        )
-    except Exception as exc:
-        logger.exception("academic gather failed: %s", exc)
-        result = GatherResult(
-            request_id=msg.request_id,
-            agent="academic",
-            error=str(exc),
-        )
+    result = await canvas_client.gather(msg)
     await ctx.send(sender, result)
 
 
@@ -60,10 +47,18 @@ async def _on_text(ctx: Context, sender: str, text: str, selection: dict | None)
     lower = text.lower()
     if any(k in lower for k in ("assignment", "canvas", "due", "course", "grade")):
         now = datetime.now(timezone.utc)
-        items = await fetch_items(sender, (now + timedelta(days=7)).isoformat())
-        if items:
+        from shared.protocol import GatherRequest
+        from uuid import uuid4
+        req = GatherRequest(
+            request_id=str(uuid4()),
+            user_id=sender,
+            window_start=now.isoformat(),
+            window_end=(now + timedelta(days=7)).isoformat(),
+        )
+        result = await canvas_client.gather(req)
+        if result.items:
             from core.cards import priorities_carousel
-            await ctx.send(sender, priorities_carousel(items[:5]))
+            await ctx.send(sender, priorities_carousel([i.model_dump() for i in result.items[:5]]))
         else:
             await send_text(ctx, sender, "No upcoming Canvas assignments found.")
     else:

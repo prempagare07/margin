@@ -23,21 +23,22 @@ def init() -> None:
         logger.info("observability: SENTRY_DSN not set — Sentry disabled")
         return
 
-    include_prompts = os.environ.get("SENTRY_INCLUDE_PROMPTS", "0") == "1"
-
     sentry_sdk.init(
         dsn=dsn,
         environment=os.environ.get("ENV", "dev"),
         release=os.environ.get("GIT_SHA", "dev"),
         traces_sample_rate=1.0 if os.environ.get("ENV") == "dev" else 0.1,
         send_default_pii=False,
+        include_local_variables=False,
+        max_request_body_size="never",
         integrations=[
             LoggingIntegration(
                 level=logging.INFO,
                 event_level=logging.ERROR,
             ),
         ],
-        before_send=_before_send if not include_prompts else None,
+        before_send=_before_send,
+        before_send_transaction=_before_transaction,
     )
 
     # Attach SentryLogsHandler to root logger for structured Sentry Logs
@@ -47,11 +48,21 @@ def init() -> None:
 
 def _before_send(event: dict, hint: dict) -> dict | None:
     """Strip LLM prompt/response data from breadcrumbs when SENTRY_INCLUDE_PROMPTS=0."""
+    from web.privacy import is_private_request
+    if is_private_request(event):
+        return None
+    if os.environ.get("SENTRY_INCLUDE_PROMPTS", "0") == "1":
+        return event
     for crumb in event.get("breadcrumbs", {}).get("values", []):
         data = crumb.get("data") or {}
         for key in ("prompt", "messages", "response", "content"):
             data.pop(key, None)
     return event
+
+
+def _before_transaction(event: dict, hint: dict) -> dict | None:
+    from web.privacy import is_private_request
+    return None if is_private_request(event) else event
 
 
 def _attach_sentry_logs_handler() -> None:
