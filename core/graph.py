@@ -532,7 +532,18 @@ async def upgrade_node(state: GraphState) -> dict:
 async def chat_node(state: GraphState) -> dict:
     ctx = state["ctx"]
     sender = state["sender"]
-    text = state["text"]
+    channel = state["channel"]
+    text = state["text"].lower().strip()
+
+    # Greetings → show the Connect onboarding form (ASI:One) or prompt (Photon)
+    greetings = {"hi", "hello", "hey", "start", "help", "get started", "setup", "set up"}
+    if text in greetings or text == "":
+        if channel == "asi1":
+            await ctx.send(sender, connect_form())
+        else:
+            await send_text(ctx, sender,
+                "Welcome to Margin! Reply with your phone number to get started.")
+        return {}
 
     try:
         reply = await fast(
@@ -551,9 +562,9 @@ async def chat_node(state: GraphState) -> dict:
             timeout=15,
         )
     except Exception:
-        reply = "I'm here! Try saying 'plan my week' to block time for your assignments."
+        reply = None
 
-    await send_text(ctx, sender, reply or "I'm here! Try 'plan my week'.")
+    await send_text(ctx, sender, reply or "I'm here! Try 'plan my week' to block time for your assignments.")
     return {}
 
 
