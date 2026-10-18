@@ -21,7 +21,9 @@ from core.cards import (
     error_card,
     pending_connect_card,
     priorities_carousel,
+    reset_confirm_card,
     review as review_card,
+    summary_card,
     upgrade_card,
     welcome_card,
 )
@@ -708,6 +710,7 @@ async def summary_node(state: GraphState) -> dict:
     ctx = state["ctx"]
     sender = state["sender"]
     user_id = state["user_id"]
+    channel = state["channel"]
 
     await send_text(ctx, sender, "Pulling your updates — one moment...")
 
@@ -760,7 +763,10 @@ async def summary_node(state: GraphState) -> dict:
     except Exception:
         reply = None
 
-    await send_text(ctx, sender, reply or f"Here's what's on your plate:\n\n{chr(10).join(item_lines[:6])}")
+    if channel == "asi1":
+        await ctx.send(sender, summary_card(reply or "\n".join(item_lines[:6]), items[:6], len(slots)))
+    else:
+        await send_text(ctx, sender, reply or f"Here's what's on your plate:\n\n{chr(10).join(item_lines[:6])}")
     return {}
 
 
@@ -770,21 +776,6 @@ async def reset_node(state: GraphState) -> dict:
     sender = state["sender"]
     user_id = state["user_id"]
 
-    from core.cards import card_message
-    # Confirm card
-    payload = {
-        "root": {
-            "type": "section",
-            "title": "Reset your account?",
-            "children": [
-                {"type": "text", "value": "This will disconnect all apps (Canvas, Gmail, Google Calendar, Slack) and delete your account data. Your calendar events and emails are NOT deleted.", "style": "muted"},
-                {"type": "button", "label": "Yes, reset everything", "primary": True,
-                 "action": {"selection": {"action": "reset_confirm"}}},
-                {"type": "button", "label": "Cancel",
-                 "action": {"selection": {"action": "back"}}},
-            ],
-        }
-    }
     sel = state.get("selection") or {}
     if sel.get("action") == "reset_confirm":
         # Execute the reset
@@ -805,7 +796,7 @@ async def reset_node(state: GraphState) -> dict:
             return {}
         await send_text(ctx, sender, "Account reset ✓ All connections cleared. Say 'hi' to start fresh.")
     else:
-        await ctx.send(sender, card_message("custom", payload))
+        await ctx.send(sender, reset_confirm_card())
     return {}
 
 

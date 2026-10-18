@@ -283,25 +283,31 @@ def events_carousel(events: list[dict], safe_to_spend: float, tz: str = "America
 
 
 def upgrade_card() -> ChatMessage:
-    """Upgrade options: Pro and Finals pack."""
+    """Pricing comparison card: Free vs Pro vs Finals Pack."""
     payload = {
         "root": {
             "type": "section",
             "title": "Upgrade Margin",
             "children": [
+                # Free tier
+                {"type": "heading", "text": "Free — what you have now"},
+                {"type": "text", "value": "• 3 weekly plans/month\n• Daily brief on demand\n• Canvas + Gmail + Calendar sync", "style": "muted"},
+                {"type": "divider"},
+                # Pro
                 {"type": "heading", "text": "Pro — $4.99 / 30 days"},
-                {"type": "text",    "value": "Unlimited briefs, nudges and planning.", "style": "muted"},
-                {"type": "button",  "label": "Get Pro", "primary": True,
+                {"type": "text", "value": "• Unlimited planning & briefs\n• 7 AM SMS brief every day\n• 9 PM nudge with action options\n• Priority calendar blocking", "style": "muted"},
+                {"type": "button", "label": "Get Pro — $4.99", "primary": True,
                  "action": {"selection": {"action": "upgrade", "tier": "pro"}}},
                 {"type": "divider"},
+                # Finals Pack
                 {"type": "heading", "text": "Finals Pack — $1.99"},
-                {"type": "text",    "value": "Two weeks of Pro during finals.", "style": "muted"},
-                {"type": "button",  "label": "Get Finals Pack",
+                {"type": "text", "value": "• 14 days of Pro\n• Perfect for finals season", "style": "muted"},
+                {"type": "button", "label": "Get Finals Pack — $1.99",
                  "action": {"selection": {"action": "upgrade", "tier": "finals"}}},
             ],
         }
     }
-    return card_message("custom", payload, "Choose a plan:")
+    return card_message("custom", payload, "Choose a plan that works for you:")
 
 
 def pending_connect_card(app_name: str, remaining: list[str]) -> ChatMessage:
@@ -388,6 +394,89 @@ def error_card(message: str, step: str = "") -> ChatMessage:
                 {"type": "text", "value": message, "style": "muted"},
                 {"type": "button", "label": "Retry", "primary": True,
                  "action": {"selection": {"action": "retry", "step": step}}},
+            ],
+        }
+    }
+    return card_message("custom", payload)
+
+
+def payment_success_card(plan_name: str, days: int) -> ChatMessage:
+    """Shown after successful payment."""
+    payload = {
+        "root": {
+            "type": "section",
+            "title": f"Welcome to {plan_name}!",
+            "children": [
+                {"type": "text", "value": f"You now have full access for {days} days.", "style": "muted"},
+                {"type": "button", "label": "Plan my week", "primary": True,
+                 "action": {"selection": {"action": "plan_week_start"}}},
+                {"type": "button", "label": "Get daily brief",
+                 "action": {"selection": {"action": "summary"}}},
+            ],
+        }
+    }
+    return card_message("custom", payload, f"Payment confirmed! {plan_name} is now active.")
+
+
+def summary_card(brief: str, items: list[dict], slots_count: int, tz: str = "America/Phoenix") -> ChatMessage:
+    """Daily brief card: LLM summary + item list + CTA to plan."""
+    source_icon = {"canvas": "📚", "gmail": "✉️", "slack": "💬", "gcal": "📅"}
+    children: list[dict] = [
+        {"type": "text", "value": brief, "style": "muted"},
+        {"type": "divider"},
+    ]
+    for it in items[:6]:
+        icon = source_icon.get(it.get("source", ""), "•")
+        due = ""
+        if it.get("due_at"):
+            try:
+                dt = datetime.fromisoformat(it["due_at"].replace("Z", "+00:00"))
+                local = dt.astimezone(ZoneInfo(tz))
+                due = f"  · due {local.strftime('%-m/%-d')}"
+            except Exception:
+                pass
+        children.append({
+            "type": "text",
+            "value": f"{icon} {it['title']}{due}",
+        })
+    children.append({"type": "divider"})
+    if slots_count > 0:
+        children.append({
+            "type": "button",
+            "label": f"Plan my week ({slots_count} free slot{'s' if slots_count != 1 else ''})",
+            "primary": True,
+            "action": {"selection": {"action": "plan_week_start"}},
+        })
+    else:
+        children.append({
+            "type": "text",
+            "value": "No free slots this week — your calendar is packed.",
+            "style": "muted",
+        })
+    payload = {
+        "root": {
+            "type": "section",
+            "title": "Your Daily Brief",
+            "children": children,
+        }
+    }
+    return card_message("custom", payload)
+
+
+def reset_confirm_card() -> ChatMessage:
+    """Confirmation card before deleting all user data."""
+    payload = {
+        "root": {
+            "type": "section",
+            "title": "Reset your account?",
+            "children": [
+                {"type": "text",
+                 "value": "This disconnects Canvas, Gmail, Google Calendar, and Slack and deletes your profile. Your actual emails and calendar events are NOT deleted.",
+                 "style": "muted"},
+                {"type": "button", "label": "Yes, reset everything", "primary": True,
+                 "action": {"selection": {"action": "reset_confirm"}}},
+                {"type": "button", "label": "Cancel",
+                 "action": {"selection": {"action": "back"}}},
             ],
         }
     }

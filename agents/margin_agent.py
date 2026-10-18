@@ -79,34 +79,36 @@ agent.include(_proto, publish_manifest=True)
 
 
 # ---------------------------------------------------------------------------
-# Payment protocol handlers
+# Payment protocol (seller role) — mirrors stripe-horoscope-agent pattern
 # ---------------------------------------------------------------------------
 
-@agent.on_message(CommitPayment)
 async def _on_commit(ctx: Context, sender: str, msg: CommitPayment) -> None:
     if msg.funds.payment_method != "stripe" or not msg.transaction_id:
         await ctx.send(sender, RejectPayment(reason="Only Stripe payments are accepted."))
         return
 
-    from payments.stripe_flow import verify_and_grant
+    from payments.stripe_flow import TIERS, verify_and_grant
     ok, tier = await verify_and_grant(msg.transaction_id, sender)
     if not ok:
         await ctx.send(sender, RejectPayment(reason="Stripe payment not completed yet. Please finish checkout."))
         return
 
     await ctx.send(sender, CompletePayment(transaction_id=msg.transaction_id))
-
-    from payments.stripe_flow import TIERS
     t = TIERS.get(tier or "", {})
     name = t.get("name", "Margin Pro")
     days = t.get("days", 30)
-    await send_text(ctx, sender, f"Payment confirmed! {name} is now active for {days} days.")
+    from core.cards import payment_success_card
+    await ctx.send(sender, payment_success_card(name, days))
 
 
-@agent.on_message(RejectPayment)
 async def _on_reject(ctx: Context, sender: str, msg: RejectPayment) -> None:
     reason = msg.reason or "Payment was rejected."
-    await send_text(ctx, sender, f"Payment cancelled: {reason}")
+    await send_text(ctx, sender, f"Payment cancelled: {reason}. Say 'upgrade' to try again.")
+
+
+from payments.payment_proto import build_payment_proto
+_payment_proto = build_payment_proto(_on_commit, _on_reject)
+agent.include(_payment_proto, publish_manifest=True)
 
 
 # ---------------------------------------------------------------------------
