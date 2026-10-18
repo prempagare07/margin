@@ -713,6 +713,8 @@ async def delete_user(user_id: str) -> None:
             "public.connections",
             "public.bills",
             "public.budgets",
+            "public.purchases",
+            "public.transactions",
             "public.users",
         ):
             await conn.execute(

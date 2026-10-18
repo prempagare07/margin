@@ -778,20 +778,20 @@ async def reset_node(state: GraphState) -> dict:
 
     sel = state.get("selection") or {}
     if sel.get("action") == "reset_confirm":
-        # Execute the reset
         try:
             from db import repo
-            from integrations import composio_tools
-            # Disconnect Composio providers
+            from integrations.composio import runtime as composio_runtime
+            # Invalidate cached Composio sessions so OAuth state is clean on reconnect
             for provider in ("gmail", "gcal", "slack"):
                 try:
-                    await composio_tools.save_connection_settings(user_id, provider, {})
+                    composio_runtime.invalidate_sessions(user_id, provider)
                 except Exception:
                     pass
-            # Delete user from DB
+            # Delete all user data from DB
             await repo.delete_user(user_id)
+            logger.info("reset: deleted user_id=%s", user_id)
         except Exception as exc:
-            logger.warning("reset: failed: %s", exc)
+            logger.warning("reset: failed for user_id=%s: %s", user_id, exc)
             await send_text(ctx, sender, "Reset failed — please try again or contact support.")
             return {}
         await send_text(ctx, sender, "Account reset ✓ All connections cleared. Say 'hi' to start fresh.")
