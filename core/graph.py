@@ -679,7 +679,8 @@ async def connect_node(state: GraphState) -> dict:
         return {}
     selection = state.get("selection") or {}
     if set(selection) <= {"action"}:
-        await _send_link_card(ctx, sender, sender)
+        # User clicked "Get started" from welcome card — show the setup form
+        await ctx.send(sender, connect_form())
         return {}
     try:
         result = await onboarding.save(sender, selection)
@@ -762,7 +763,8 @@ async def _send_next_app_card(ctx, sender: str, user_id: str, apps: list[str]) -
         try:
             from web.connect_state import make_state
             url = f"{base}/connect/canvas?state={make_state(user_id)}"
-        except Exception:
+        except Exception as exc:
+            logger.warning("app_card: canvas url failed: %s", exc)
             url = f"{base}/connect/canvas"
     else:
         _composio_id = {"Gmail": "gmail", "Google Calendar": "googlecalendar", "Slack": "slack"}
@@ -771,11 +773,16 @@ async def _send_next_app_card(ctx, sender: str, user_id: str, apps: list[str]) -
             try:
                 from integrations.composio_tools import connect_link
                 url = await connect_link(user_id, cid)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("app_card: composio link failed app=%s: %s", app_name, exc)
 
     desc = _APP_DESCRIPTIONS.get(app_name, "")
-    await ctx.send(sender, app_connection_card(app_name, desc, url, remaining))
+    logger.info("app_card: sending %s card to %s url=%s remaining=%s", app_name, sender[:20], bool(url), remaining)
+    try:
+        await ctx.send(sender, app_connection_card(app_name, desc, url, remaining))
+    except Exception as exc:
+        logger.error("app_card: ctx.send failed for %s: %s", app_name, exc)
+        await send_text(ctx, sender, f"Next: connect {app_name} at {url or base + '/connect/canvas'}")
 
 
 async def chat_node(state: GraphState) -> dict:
