@@ -10,6 +10,7 @@ load_dotenv()
 
 from uagents import Agent, Context
 
+from channels.scheduler import start_scheduler, stop_scheduler
 from core import graph
 from core.cards import connect_form
 from core.chat import make_chat_protocol
@@ -31,6 +32,12 @@ agent = Agent(
 @agent.on_event("startup")
 async def _startup(ctx: Context) -> None:
     logger.info("margin agent online: %s", ctx.address)
+    start_scheduler()
+
+
+@agent.on_event("shutdown")
+async def _shutdown(ctx: Context) -> None:
+    stop_scheduler()
 
 
 # ---------------------------------------------------------------------------

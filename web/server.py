@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import sentry_sdk
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from standardwebhooks import Webhook, WebhookVerificationError
@@ -29,9 +30,18 @@ if _dsn:
     )
 
 # ---------------------------------------------------------------------------
-# App
+# App with scheduler lifespan
 # ---------------------------------------------------------------------------
-app = FastAPI(title="Margin", docs_url=None, redoc_url=None)
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    from channels.scheduler import start_scheduler, stop_scheduler
+    start_scheduler()
+    yield
+    stop_scheduler()
+
+
+app = FastAPI(title="Margin", docs_url=None, redoc_url=None, lifespan=_lifespan)
 
 _WEBHOOK_SECRET = os.environ.get("PHOTON_WEBHOOK_SECRET", "")
 
