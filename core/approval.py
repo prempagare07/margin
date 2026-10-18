@@ -35,16 +35,12 @@ def _db_available() -> bool:
 
 
 async def _repo():
-    """Return db.repo module, or None if DB is unavailable."""
+    """Return db.repo, using memory only when no database is configured."""
     if not _db_available():
         return None
-    try:
-        from db import repo
-        await repo.get_pool()  # validates the connection on the current event loop
-        return repo
-    except Exception as exc:
-        logger.warning("approval: DB unavailable (%s) — using memory", exc)
-        return None
+    from db import repo
+    await repo.get_pool()  # configured database failures must remain visible
+    return repo
 
 
 # ---------------------------------------------------------------------------
@@ -60,10 +56,9 @@ async def create_plan(user_id: str, actions: list[dict]) -> str:
     try:
         await r.insert_plan(plan_id, user_id, actions)
         return plan_id
-    except Exception as exc:
-        logger.warning("create_plan DB error: %s — using memory", exc)
-        _mem_upsert_plan(plan_id, user_id, actions)
-        return plan_id
+    except Exception:
+        logger.warning("create_plan: configured database write failed")
+        raise
 
 
 async def get_plan(plan_id: str, user_id: str) -> dict | None:

@@ -34,6 +34,7 @@ agent = Agent(
     seed=os.environ["MARGIN_SEED"],
     port=8000,
     mailbox=True,
+    handle_messages_concurrently=True,
 )
 
 

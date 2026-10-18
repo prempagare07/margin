@@ -180,31 +180,37 @@ def review(plan_id: str, rows: list[dict]) -> ChatMessage:
 
 def done(results: list[dict]) -> ChatMessage:
     """Done card with result links and a Back button."""
-    buttons: list[dict] = []
+    children: list[dict] = []
     for r in results:
         if r.get("link"):
-            buttons.append({
+            children.append({
                 "type": "button",
                 "label": r.get("label", "Open"),
                 "primary": True,
                 "action": {"selection": {"action": "open"}, "redirect": r["link"]},
             })
-    buttons.append({
+        elif r.get("error"):
+            children.append({
+                "type": "text",
+                "value": f"Couldn't create {r.get('label', 'action')}: {r['error']}",
+            })
+    children.append({
         "type": "button",
         "label": "← Back",
         "action": {"selection": {"action": "back"}},
     })
+    failed = any(result.get("error") for result in results)
     payload = {
         "root": {
             "type": "section",
-            "title": "Done!",
+            "title": "Plan complete" if failed else "Done!",
             "children": [
-                {"type": "text", "value": "Your plan has been executed.", "style": "muted"},
-                *buttons,
+                {"type": "text", "value": "Your approved actions finished.", "style": "muted"},
+                *children,
             ],
         }
     }
-    return card_message("custom", payload, "Done!")
+    return card_message("custom", payload, "Plan complete." if failed else "Done!")
 
 
 def events_carousel(events: list[dict], safe_to_spend: float, tz: str = "America/Phoenix") -> ChatMessage:

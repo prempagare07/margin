@@ -62,7 +62,25 @@ wiring. The facade is implemented in `integrations/composio_tools.py`; see
 helpers, tests, and live read verification. Composio writes are claimed by the
 adapter: the orchestrator must approve with `repo.approve_plan`, then call
 `execute_approved_action` without pre-claiming the action. Agent extraction,
-gather assembly, and replacement of simulated execution remain teammate work.
+gather assembly, calendar action conversion, and adapter-owned execution are now
+wired into the orchestrator.
+
+Calendar connection and planning behavior:
+
+- After Google Calendar becomes active, `auto_select_calendars` reads every
+  writable calendar and selects the writable primary calendar as the write
+  target. A single writable non-primary calendar is accepted as a fallback;
+  multiple writable calendars without a primary require an explicit choice.
+- Stored Calendar actions use `type="create_event"` with params `account_id`,
+  `calendar_id`, `title`, `starts_at`, `ends_at`, optional `description`, and
+  `purpose="study_block"`. Model-only fields such as `item_id`, `start_iso`,
+  `end_iso`, and `summary_row` are never persisted.
+- `execute_node` approves the plan and sends each `ActionRequest` without first
+  claiming or completing its execution. The Composio write adapter exclusively
+  owns the durable claim and receipt.
+- The merged onboarding Connect flow saves the form and then sends one link
+  card. Its Canvas URL uses the signed `token` query parameter; Gmail, Google
+  Calendar, and Slack use provider keys `gmail`, `gcal`, and `slack`.
 
 ### Canvas feed reader and connection page
 

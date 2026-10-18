@@ -6,7 +6,7 @@ through execute_approved_action, which owns the durable execution claim.
 
 from .composio.actions import execute_approved_action
 from .composio.cache import cache_items, cached_gather_result, filter_items
-from .composio.calendar import compute_free_slots, fetch_calendar_events, list_calendars
+from .composio.calendar import auto_select_calendars, compute_free_slots, fetch_calendar_events, list_calendars
 from .composio.connections import (
     connect_link, connection_status, is_connected, save_connection_settings,
     select_connected_account,
@@ -28,7 +28,7 @@ fetch_source = _observe_read("composio", "source", fetch_source)
 
 __all__ = [
     "connect_link", "connection_status", "is_connected", "select_connected_account",
-    "list_calendars", "list_slack_channels", "save_connection_settings",
+    "list_calendars", "auto_select_calendars", "list_slack_channels", "save_connection_settings",
     "fetch_gmail_messages", "fetch_slack_messages", "fetch_calendar_events",
     "compute_free_slots", "fetch_source", "execute_approved_action",
     "cache_items", "cached_gather_result", "filter_items", "item_id", "source_key",

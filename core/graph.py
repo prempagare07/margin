@@ -6,6 +6,7 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, TypedDict
+from zoneinfo import ZoneInfo
 
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
@@ -24,7 +25,11 @@ from core.chat import send_text
 from core.llm import fast, plan as llm_plan
 
 logger = logging.getLogger(__name__)
-FAKE = os.environ.get("FAKE_SPECIALISTS", "0") == "1"
+
+
+def _fake_specialists() -> bool:
+    """Read at call time so tests and entrypoints can select fixture mode safely."""
+    return os.environ.get("FAKE_SPECIALISTS", "0") == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +102,7 @@ class GraphState(TypedDict):
     free_slots: list[list[str]]
     plan_id: str | None
     actions: list[dict]
+    gather_error: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -104,11 +110,10 @@ class GraphState(TypedDict):
 # ---------------------------------------------------------------------------
 
 async def classify_node(state: GraphState) -> dict:
-    import sentry_sdk
     sel = state.get("selection") or {}
     action = sel.get("action", "")
     if action:
-        sentry_sdk.logger.info("classify: user=%s action=%s", state["user_id"], action)
+        logger.info("classify: action=%s", action)
         return {"intent": action}
 
     lower = (state["text"] or "").lower()
@@ -144,17 +149,16 @@ async def classify_node(state: GraphState) -> dict:
 async def gather_node(state: GraphState) -> dict:
     """Gather items + free slots from specialists (or fixtures)."""
     async with aspan("agent.gather", "gather items", user_id=state["user_id"]) as s:
-        if FAKE:
-            items, slots = _fake_items(), _fake_slots()
+        if _fake_specialists():
+            items, slots, gather_error = _fake_items(), _fake_slots(), None
         else:
-            items, slots = await _gather_from_specialists(
+            items, slots, gather_error = await _gather_from_specialists(
                 state["ctx"], state["user_id"], state["sender"]
             )
         if s:
             s.set_data("item_count", len(items))
-        import sentry_sdk
-        sentry_sdk.logger.info("gather: %d items for user %s", len(items), state["user_id"])
-        return {"items": items, "free_slots": slots}
+        logger.info("gather: item_count=%d", len(items))
+        return {"items": items, "free_slots": slots, "gather_error": gather_error}
 
 
 def _is_agent_ctx(ctx: Any) -> bool:
@@ -162,7 +166,9 @@ def _is_agent_ctx(ctx: Any) -> bool:
     return not hasattr(ctx, "_phone")  # PhotonCtx has _phone; real Context does not
 
 
-async def _gather_from_specialists(ctx: Any, user_id: str, sender: str) -> tuple[list, list]:
+async def _gather_from_specialists(
+    ctx: Any, user_id: str, sender: str,
+) -> tuple[list[dict], list[list[str]], str | None]:
     """Send GatherRequest to all 4 specialists; collect results with 15s timeout."""
     import asyncio
     from datetime import datetime, timedelta, timezone
@@ -172,15 +178,18 @@ async def _gather_from_specialists(ctx: Any, user_id: str, sender: str) -> tuple
     # Load addresses from file (written by bureau._print_addresses)
     addresses = _load_addresses()
     if not addresses:
-        logger.warning("gather: no addresses.json — falling back to fixtures")
-        return _fake_items(), _fake_slots()
+        logger.warning("gather: no specialist addresses")
+        return [], [], "CALENDAR_UNAVAILABLE"
 
     now = datetime.now(timezone.utc)
     window_start = now.isoformat()
     window_end = (now + timedelta(days=7)).isoformat()
 
     specialist_keys = ["margin-academic", "margin-inbox", "margin-planner", "margin-life"]
-    futures: dict[str, asyncio.Future] = {}
+    futures: dict[str, tuple[str, asyncio.Future]] = {}
+    planner_error: str | None = (
+        None if addresses.get("margin-planner") else "SPECIALIST_UNAVAILABLE"
+    )
 
     for key in specialist_keys:
         addr = addresses.get(key)
@@ -188,7 +197,7 @@ async def _gather_from_specialists(ctx: Any, user_id: str, sender: str) -> tuple
             continue
         req_id = str(uuid4())
         fut = gather_bus.register(req_id)
-        futures[req_id] = fut
+        futures[req_id] = (key, fut)
         try:
             await ctx.send(addr, GatherRequest(
                 request_id=req_id,
@@ -203,22 +212,25 @@ async def _gather_from_specialists(ctx: Any, user_id: str, sender: str) -> tuple
     all_items: list = []
     all_slots: list = []
 
-    for req_id, fut in futures.items():
+    for req_id, (key, fut) in futures.items():
         try:
             result = await asyncio.wait_for(fut, timeout=15)
             if result and not result.error:
-                all_items.extend(result.items or [])
+                all_items.extend(
+                    item.model_dump() if hasattr(item, "model_dump") else dict(item)
+                    for item in (result.items or [])
+                )
                 all_slots.extend(result.free_slots or [])
             elif result and result.error:
                 logger.warning("gather: specialist error: %s", result.error)
+                if key == "margin-planner":
+                    planner_error = result.error
         except asyncio.TimeoutError:
-            logger.warning("gather: specialist timed out for request %s", req_id)
+            logger.warning("gather: specialist timed out: %s", key)
+            if key == "margin-planner":
+                planner_error = "TIMEOUT"
 
-    if not all_items:
-        logger.info("gather: no real items collected — using fixtures")
-        return _fake_items(), _fake_slots()
-
-    return all_items, all_slots or _fake_slots()
+    return all_items, all_slots, planner_error
 
 
 def _load_addresses() -> dict:
@@ -233,14 +245,13 @@ def _load_addresses() -> dict:
 
 async def _execute_action(
     ctx: Any, user_id: str, plan_id: str, action: dict, addresses: dict
-) -> tuple[str | None, str | None]:
+) -> Any:
     """Send an ActionRequest to the right specialist and await ActionResult.
 
-    Returns (link, error). Falls back to fake calendar link when FAKE or no ctx.
+    Returns the specialist's ActionResult. Fixture links exist only in fake mode.
     """
     import asyncio
-    from uuid import uuid4
-    from shared.protocol import ActionRequest
+    from shared.protocol import ActionRequest, ActionResult
 
     action_type = action.get("type", "create_event")
     raw_params = action.get("params") or {}
@@ -248,22 +259,24 @@ async def _execute_action(
     # Route: create_event/add_reminder → planner, create_draft → inbox
     if action_type == "create_draft":
         specialist = "margin-inbox"
-        params = {k: raw_params.get(k, "") for k in ("to", "subject", "body")}
     else:
         specialist = "margin-planner"
-        params = {
-            "title": raw_params.get("title", "Margin block"),
-            "start_iso": raw_params.get("start_iso", ""),
-            "end_iso": raw_params.get("end_iso", ""),
-            "description": f"Scheduled by Margin (plan {plan_id})",
-        }
 
-    if FAKE or not _is_agent_ctx(ctx):
-        return "https://calendar.google.com", None
+    if _fake_specialists():
+        return ActionResult(
+            action_id=action["action_id"], ok=True,
+            link="https://calendar.google.com", data={"execution_status": "succeeded"},
+        )
+    if not _is_agent_ctx(ctx):
+        return ActionResult(
+            action_id=action["action_id"], ok=False, error="SPECIALIST_UNAVAILABLE",
+        )
 
     addr = addresses.get(specialist)
     if not addr:
-        return "https://calendar.google.com", None
+        return ActionResult(
+            action_id=action["action_id"], ok=False, error="SPECIALIST_UNAVAILABLE",
+        )
 
     aid = action["action_id"]
     fut = gather_bus.register(aid)
@@ -273,16 +286,14 @@ async def _execute_action(
             plan_id=plan_id,
             user_id=user_id,
             type=action_type,
-            params=params,
+            params=raw_params,
         ))
         result = await asyncio.wait_for(fut, timeout=15)
-        if result and result.ok:
-            return result.link or "https://calendar.google.com", None
-        return None, result.error if result else "no response"
+        return result or ActionResult(action_id=aid, ok=False, error="NO_RESPONSE")
     except asyncio.TimeoutError:
-        return None, "specialist timed out"
-    except Exception as exc:
-        return None, str(exc)
+        return ActionResult(action_id=aid, ok=False, error="SPECIALIST_TIMEOUT")
+    except Exception:
+        return ActionResult(action_id=aid, ok=False, error="SPECIALIST_UNAVAILABLE")
 
 
 class _ActionParams(BaseModel):
@@ -307,6 +318,8 @@ async def plan_week_node(state: GraphState) -> dict:
     """Call Step 5 to schedule items into free slots."""
     items = state["items"]
     slots = state["free_slots"]
+    if state.get("gather_error") or not items or not slots:
+        return {"actions": []}
 
     item_lines = "\n".join(
         f"- [{it['item_id']}] {it['title']}"
@@ -344,20 +357,86 @@ async def plan_week_node(state: GraphState) -> dict:
         logger.warning("plan_week LLM failed: %s — using fallback", exc)
         actions = []
         for i, item in enumerate(items[:5]):
-            slot = slots[i] if i < len(slots) else None
+            if i >= len(slots):
+                break
+            slot = slots[i]
             actions.append({
                 "action_id": f"a{i + 1}",
                 "type": "create_event",
                 "params": {
                     "title": f"Work on: {item['title']}",
                     "item_id": item["item_id"],
-                    "start_iso": slot[0] if slot else datetime.now(timezone.utc).isoformat(),
-                    "end_iso": slot[1] if slot else datetime.now(timezone.utc).isoformat(),
+                    "start_iso": slot[0],
+                    "end_iso": slot[1],
                     "summary_row": item["title"][:50],
                 },
             })
 
     return {"actions": actions}
+
+
+def _stored_calendar_actions(
+    proposed: list[dict], slots: list[list[str]], *, account_id: str, calendar_id: str,
+) -> list[dict]:
+    """Convert model output to the exact reviewed Calendar adapter contract."""
+    parsed_slots: list[tuple[datetime, datetime]] = []
+    for slot in slots:
+        try:
+            begins = datetime.fromisoformat(slot[0].replace("Z", "+00:00"))
+            ends = datetime.fromisoformat(slot[1].replace("Z", "+00:00"))
+            if begins.tzinfo is not None and ends > begins:
+                parsed_slots.append((begins.astimezone(timezone.utc), ends.astimezone(timezone.utc)))
+        except (IndexError, TypeError, ValueError):
+            continue
+
+    result: list[dict] = []
+    seen: set[str] = set()
+    for action in proposed:
+        params = action.get("params") if isinstance(action, dict) else None
+        action_id = action.get("action_id") if isinstance(action, dict) else None
+        if (not isinstance(params, dict) or not isinstance(action_id, str) or not action_id
+                or action_id in seen or action.get("type") != "create_event"):
+            continue
+        try:
+            begins = datetime.fromisoformat(params["start_iso"].replace("Z", "+00:00"))
+            ends = datetime.fromisoformat(params["end_iso"].replace("Z", "+00:00"))
+            if begins.tzinfo is None or ends.tzinfo is None:
+                continue
+            begins, ends = begins.astimezone(timezone.utc), ends.astimezone(timezone.utc)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+        if ends <= begins or ends - begins < timedelta(minutes=30):
+            continue
+        if not any(slot_start <= begins and ends <= slot_end for slot_start, slot_end in parsed_slots):
+            continue
+        title = params.get("title")
+        if not isinstance(title, str) or not title.strip():
+            continue
+        seen.add(action_id)
+        result.append({
+            "action_id": action_id,
+            "type": "create_event",
+            "params": {
+                "account_id": account_id,
+                "calendar_id": calendar_id,
+                "title": title.strip(),
+                "starts_at": begins.isoformat().replace("+00:00", "Z"),
+                "ends_at": ends.isoformat().replace("+00:00", "Z"),
+                "description": "Scheduled by Margin after your approval.",
+                "purpose": "study_block",
+            },
+        })
+    return result
+
+
+def _review_window(params: dict, tz: str) -> str:
+    try:
+        zone = ZoneInfo(tz)
+        start = datetime.fromisoformat(params["starts_at"].replace("Z", "+00:00")).astimezone(zone)
+        end = datetime.fromisoformat(params["ends_at"].replace("Z", "+00:00")).astimezone(zone)
+        return f"{start.strftime('%a %-m/%-d, %-I:%M %p')}–{end.strftime('%-I:%M %p')}"
+    except (KeyError, TypeError, ValueError):
+        return "Time unavailable"
 
 
 async def store_plan_node(state: GraphState) -> dict:
@@ -366,14 +445,46 @@ async def store_plan_node(state: GraphState) -> dict:
     sender = state["sender"]
     channel = state["channel"]
     user_id = state["user_id"]
-    actions = state["actions"]
+    if state.get("gather_error"):
+        await send_text(ctx, sender, "Margin couldn't read your calendar. Check the Google Calendar connection and try again.")
+        return {}
+    if not state.get("items"):
+        await send_text(ctx, sender, "Margin didn't find any open items to schedule this week.")
+        return {}
+    if not state.get("free_slots"):
+        await send_text(ctx, sender, "Margin couldn't find an open calendar slot this week.")
+        return {}
+
+    from db import repo
+    if _fake_specialists():
+        account_id, calendar_id, tz = "fixture-account", "primary", "America/Phoenix"
+    else:
+        connection = await repo.get_connection(user_id, "gcal")
+        settings = ((connection or {}).get("secret") or {}).get("settings") or {}
+        account_id = (connection or {}).get("composio_account_id")
+        calendar_id = settings.get("write_calendar_id")
+        if (not connection or connection.get("status") != "active"
+                or not isinstance(account_id, str) or not isinstance(calendar_id, str)):
+            await send_text(ctx, sender, "Connect Google Calendar and choose a writable calendar before planning your week.")
+            return {}
+        await repo.upsert_user(user_id)
+        user = await repo.get_user(user_id)
+        tz = (user or {}).get("tz") or "America/Phoenix"
+
+    actions = _stored_calendar_actions(
+        state["actions"], state["free_slots"],
+        account_id=account_id, calendar_id=calendar_id,
+    )
+    if not actions:
+        await send_text(ctx, sender, "Margin couldn't build a valid study block inside your free calendar slots.")
+        return {}
 
     plan_id = await approval.create_plan(user_id, actions)
 
     rows = [
         {
-            "label": (a.get("params") or {}).get("summary_row") or (a.get("params") or {}).get("title", a.get("action_id", "")),
-            "value": ((a.get("params") or {}).get("start_iso", ""))[:16].replace("T", " "),
+            "label": (a.get("params") or {}).get("title", a.get("action_id", "")),
+            "value": _review_window(a.get("params") or {}, tz),
         }
         for a in actions
     ]
@@ -423,80 +534,27 @@ async def execute_node(state: GraphState) -> dict:
     addresses = _load_addresses()
     results: list[dict] = []
     for action in actions:
-        aid = action["action_id"]
-        if not await approval.claim_action(plan_id, aid, user_id):
-            continue
-        link, error = await _execute_action(ctx, user_id, plan_id, action, addresses)
-        await approval.complete_action(plan_id, aid, user_id, {"link": link}, error)
-        if link:
-            p = action.get("params") or {}
-            results.append({"label": p.get("title", action.get("action_id", "Event")), "link": link})
+        action_result = await _execute_action(ctx, user_id, plan_id, action, addresses)
+        params = action.get("params") or {}
+        label = params.get("title", action.get("action_id", "Event"))
+        results.append({
+            "label": label,
+            "link": action_result.link if action_result.ok else None,
+            "error": None if action_result.ok else (action_result.error or "ACTION_FAILED"),
+        })
 
     await approval.mark_done(plan_id, user_id)
 
     if channel == "asi1":
         await ctx.send(sender, done_card(results))
     else:
-        await send_text(ctx, sender, f"Done! Blocked {len(results)} slot(s) in your calendar.")
+        succeeded = sum(not result["error"] for result in results)
+        failed = [result["label"] for result in results if result["error"]]
+        message = f"Created {succeeded} calendar block(s)."
+        if failed:
+            message += " Failed: " + ", ".join(failed) + "."
+        await send_text(ctx, sender, message)
 
-    return {}
-
-
-async def connect_node(state: GraphState) -> dict:
-    """Handle Connect form submission: save profile, show app-link card."""
-    import sentry_sdk
-    ctx = state["ctx"]
-    sender = state["sender"]
-    channel = state["channel"]
-    user_id = state["user_id"]
-    sel = state.get("selection") or {}
-
-    phone = sel.get("phone", "").strip()
-    monthly_income = float(sel.get("monthly_income") or 0)
-    weekly_cap = float(sel.get("weekly_cap") or 0) or None
-    savings_goal = float(sel.get("savings_goal") or 0) or None
-
-    try:
-        from db import repo
-        await repo.upsert_user(
-            user_id=user_id,
-            phone=phone or None,
-            monthly_income=monthly_income,
-            weekly_cap=weekly_cap,
-            savings_goal=savings_goal,
-        )
-        sentry_sdk.logger.info("connect: profile saved for user %s", user_id)
-    except Exception as exc:
-        logger.warning("connect: DB upsert failed: %s", exc)
-
-    if channel != "asi1":
-        await send_text(ctx, sender,
-            "Got it! Open ASI:One and connect Canvas, Gmail, and Google Calendar to finish setup.")
-        return {}
-
-    base = os.environ.get("PUBLIC_BASE_URL", "https://inappmargin.vip")
-    try:
-        from web.connect_state import make_state
-        canvas_url = f"{base}/connect/canvas?state={make_state(user_id)}"
-    except Exception:
-        canvas_url = f"{base}/connect/canvas"
-
-    links = {"Canvas": canvas_url}
-
-    try:
-        from integrations.composio_tools import connect_link
-        for app in ("gmail", "googlecalendar", "slack"):
-            try:
-                url = await connect_link(user_id, app)
-                label = {"gmail": "Gmail", "googlecalendar": "Google Calendar", "slack": "Slack"}[app]
-                links[label] = url
-            except Exception:
-                pass
-    except Exception as exc:
-        logger.warning("connect: composio links failed: %s", exc)
-
-    from core.cards import link_buttons
-    await ctx.send(sender, link_buttons(links))
     return {}
 
 
@@ -591,7 +649,26 @@ async def upgrade_node(state: GraphState) -> dict:
     return {}
 
 
+async def _send_link_card(ctx: Any, sender: str, user_id: str) -> None:
+    from core.cards import link_buttons
+    from integrations import composio_tools
+    from web.connect_state import make_connect_url
+
+    links: dict[str, str] = {}
+    try:
+        links["Canvas"] = make_connect_url(user_id)
+    except Exception as exc:
+        logger.warning("connect: canvas link failed code=%s", getattr(exc, "code", "CONFIGURATION_ERROR"))
+    for provider, label in (("gmail", "Gmail"), ("gcal", "Google Calendar"), ("slack", "Slack")):
+        try:
+            links[label] = await composio_tools.connect_link(user_id, provider)
+        except Exception as exc:
+            logger.warning("connect: link failed provider=%s code=%s", provider, getattr(exc, "code", "LINK_FAILED"))
+    await ctx.send(sender, link_buttons(links))
+
+
 async def connect_node(state: GraphState) -> dict:
+    """Save onboarding once, then show the single app-link card."""
     from core import onboarding
 
     ctx, sender = state["ctx"], state["sender"]
@@ -600,7 +677,7 @@ async def connect_node(state: GraphState) -> dict:
         return {}
     selection = state.get("selection") or {}
     if set(selection) <= {"action"}:
-        await ctx.send(sender, connect_form())
+        await _send_link_card(ctx, sender, sender)
         return {}
     try:
         result = await onboarding.save(sender, selection)
@@ -628,16 +705,49 @@ async def connect_node(state: GraphState) -> dict:
             f"message from that phone to {destination} within 10 minutes:\n\n"
             f"LINK {result.link_code}\n\n"
             "Your phone will be linked after Margin receives that message.")
+    await _send_link_card(ctx, sender, sender)
+    return {}
+
+
+async def linked_node(state: GraphState) -> dict:
+    await send_text(
+        state["ctx"], state["sender"],
+        "Finish connecting in the browser, then tap I've connected everything.",
+    )
+    return {}
+
+
+async def check_links_node(state: GraphState) -> dict:
+    from integrations import composio_tools
+
+    labels = {"gmail": "Gmail", "gcal": "Google Calendar", "slack": "Slack"}
+    lines: list[str] = []
+    for provider in ("gmail", "gcal", "slack"):
+        try:
+            status = await composio_tools.connection_status(state["user_id"], provider)
+            if status.status == "active":
+                if provider == "gcal" and not status.settings.get("calendar_ids"):
+                    await composio_tools.auto_select_calendars(state["user_id"])
+                value = "connected"
+            elif status.status == "relink_required":
+                value = "needs re-linking"
+            else:
+                value = "not connected"
+        except Exception as exc:
+            code = getattr(exc, "code", "STATUS_UNAVAILABLE")
+            logger.warning("check_links: provider=%s code=%s", provider, code)
+            value = "needs re-linking" if code in {"RELINK_REQUIRED", "ACCOUNT_CHANGED"} else "not connected"
+        lines.append(f"{labels[provider]}: {value}")
+    await send_text(state["ctx"], state["sender"], "\n".join(lines))
     return {}
 
 
 async def chat_node(state: GraphState) -> dict:
-    import sentry_sdk
     ctx = state["ctx"]
     sender = state["sender"]
     channel = state["channel"]
     text = state["text"].lower().strip()
-    sentry_sdk.logger.info("chat: user=%s intent=%s text=%r", state["user_id"], state.get("intent"), text[:80])
+    logger.info("chat: intent=%s", state.get("intent"))
 
     # Greetings → show the Connect onboarding form (ASI:One) or prompt (Photon)
     greetings = {"hi", "hello", "hey", "start", "help", "get started", "setup", "set up"}
@@ -679,6 +789,8 @@ async def chat_node(state: GraphState) -> dict:
 def _route(state: GraphState) -> str:
     routes: dict[str, str] = {
         "connect":    "connect",
+        "check_links": "check_links",
+        "linked":     "linked",
         "plan_week":  "gather",
         "approve":    "execute",
         "cancel":     "cancel",
@@ -700,6 +812,8 @@ def _build() -> Any:
     for name, fn in [
         ("classify",   classify_node),
         ("connect",    connect_node),
+        ("check_links", check_links_node),
+        ("linked",     linked_node),
         ("gather",     gather_node),
         ("plan_week",  plan_week_node),
         ("store_plan", store_plan_node),
@@ -716,6 +830,8 @@ def _build() -> Any:
         "classify", _route,
         {
             "connect":    "connect",
+            "check_links": "check_links",
+            "linked":     "linked",
             "gather":     "gather",
             "execute":    "execute",
             "cancel":     "cancel",
@@ -726,7 +842,7 @@ def _build() -> Any:
     )
     g.add_edge("gather",     "plan_week")
     g.add_edge("plan_week",  "store_plan")
-    for terminal in ("connect", "store_plan", "execute", "cancel", "priorities", "upgrade", "chat"):
+    for terminal in ("connect", "check_links", "linked", "store_plan", "execute", "cancel", "priorities", "upgrade", "chat"):
         g.add_edge(terminal, END)
 
     return g.compile()
@@ -762,6 +878,7 @@ async def handle(
         "free_slots": [],
         "plan_id": None,
         "actions": [],
+        "gather_error": None,
     }
     try:
         await _app.ainvoke(state)

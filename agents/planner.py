@@ -12,6 +12,7 @@ load_dotenv()
 from uagents import Agent, Context
 
 from core.chat import make_chat_protocol, send_text
+from db import repo
 from integrations.composio_tools import (
     IntegrationError,
     cached_gather_result,
@@ -50,7 +51,10 @@ async def _on_gather(ctx: Context, sender: str, msg: GatherRequest) -> None:
             start=msg.window_start,
             end=msg.window_end,
         )
-        account_id = batch.records[0].calendar_id if batch.records else ""
+        connection = await repo.get_connection(msg.user_id, "gcal")
+        account_id = (connection or {}).get("composio_account_id")
+        if not account_id:
+            raise IntegrationError("NOT_CONNECTED", "gcal")
         items_raw = [r.item for r in batch.records]
         items = await cache_items(msg.user_id, "gcal", account_id, items_raw)
         items = filter_items(items, start=msg.window_start, end=msg.window_end)

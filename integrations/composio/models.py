@@ -171,6 +171,7 @@ class CalendarOption:
     account_id: str
     readable: bool = True
     writable: bool = False
+    primary: bool = False
     timezone: str = "UTC"
 
     def __post_init__(self):

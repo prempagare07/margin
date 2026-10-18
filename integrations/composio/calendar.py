@@ -222,6 +222,7 @@ async def _list_calendars(user_id: str, account_id: str) -> ReadBatch[CalendarOp
                         account_id=account_id,
                         readable=role in _READ_ROLES,
                         writable=role in _WRITE_ROLES,
+                        primary=value.get("primary") is True,
                         timezone=zone,
                     )
                 except (IntegrationError, TypeError, ValueError) as exc:
@@ -251,6 +252,29 @@ async def list_calendars(user_id: str) -> ReadBatch[CalendarOption]:
     async with runtime.read_budget():
         connection = await connections.require_connection(user_id, "gcal")
         return await _list_calendars(user_id, connection.account_id)
+
+
+async def auto_select_calendars(user_id: str) -> dict:
+    """Read every writable calendar and choose the writable primary for writes."""
+    from . import connections
+
+    batch = await list_calendars(user_id)
+    if not batch.complete or batch.issues:
+        raise _error("PARTIAL_RESULT")
+    writable = [option for option in batch.records if option.writable]
+    primary = [option for option in writable if option.primary]
+    if len(primary) == 1:
+        target = primary[0]
+    elif not primary and len(writable) == 1:
+        target = writable[0]
+    else:
+        raise _error("CALENDAR_SELECTION_REQUIRED")
+    settings = {
+        "calendar_ids": [option.id for option in writable],
+        "write_calendar_id": target.id,
+    }
+    await connections.save_connection_settings(user_id, "gcal", settings)
+    return settings
 
 
 async def fetch_calendar_events(user_id: str, *, start: str, end: str) -> ReadBatch[CalendarRecord]:
