@@ -898,12 +898,9 @@ async def check_links_node(state: GraphState) -> dict:
             await _send_next_app_card_with_context(ctx, sender, user_id, remaining,
                 prefix=f"{app} connected ✓")
         else:
-            # Not yet connected — re-show pending card with error context
             await send_text(ctx, sender,
                 f"Hmm, {app} doesn't seem connected yet. "
-                "Complete the authorization in the browser, then tap Done again.")
-            await asyncio.sleep(2)
-            await ctx.send(sender, pending_connect_card(app, remaining))
+                "Complete the authorization in the browser, then say \"check apps\" to try again.")
         return {}
 
     # Legacy "I've connected everything" or "are my apps connected" query
@@ -1083,13 +1080,14 @@ async def chat_node(state: GraphState) -> dict:
     logger.info("chat: intent=%s", intent)
 
     # User clicked a "Connect <App>" button → browser opens for OAuth.
-    # Show a pending card with "Done" + "Try again" buttons. Do NOT regenerate
-    # OAuth links here — that would overwrite pending_account_id in DB.
+    # Use send_text (not ctx.send card) — cards get 429'd at this frequency.
+    # Do NOT regenerate OAuth links here (would overwrite pending_account_id).
     if intent == "linked":
         app = sel.get("app", "")
-        remaining = list(sel.get("remaining") or [])
         if app:
-            await ctx.send(sender, pending_connect_card(app, remaining))
+            await send_text(ctx, sender,
+                f"Browser opened for {app} — complete the authorization there. "
+                f"When you're done, come back and say \"connected\" or \"check apps\".")
         return {}
 
     # User tapped "Skip for now" on an app card
