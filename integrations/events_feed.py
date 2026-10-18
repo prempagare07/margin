@@ -47,7 +47,7 @@ async def fetch_events(user_id: str, window_end: str) -> list[Item]:
         return _fake_events(user_id)
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
             r = await client.get(feed_url)
             r.raise_for_status()
             content = r.content

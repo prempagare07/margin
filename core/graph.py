@@ -124,10 +124,14 @@ async def classify_node(state: GraphState) -> dict:
         logger.info("classify: action=%s", action)
         return {"intent": action}
 
-    lower = (state["text"] or "").lower()
+    lower = (state["text"] or "").lower().strip()
     logger.info("classify: text=%r", lower[:120])
 
-    if any(k in lower for k in ("summary", "what happened", "today", "update me", "brief me", "what's new", "whats new", "catch me up", "catch up")):
+    # Greetings always go to chat — never reclassify via LLM
+    if lower in {"hi", "hello", "hey", "start", "help", "get started", "setup", "set up", ""}:
+        return {"intent": "chat"}
+
+    if any(k in lower for k in ("summary", "what happened", "update me", "brief me", "what's new", "whats new", "catch me up", "catch up")):
         return {"intent": "summary"}
     if any(k in lower for k in ("reset", "clear account", "start over", "disconnect all", "delete account", "remove all")):
         return {"intent": "reset"}
