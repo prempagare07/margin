@@ -128,12 +128,31 @@ async def parse_selection(text: str) -> dict | None:
     if re.search(r'\b(monthly_income|weekly_cap|savings_goal)\b|["\']?(phone|bills)["\']?\s*[:=]', stripped, re.I):
         return {"action": "connect", "_invalid": True}
 
+    # Prose shortcuts for common card button clicks that the planner rewrites
+    _lower = stripped.lower()
+    _prose_map = {
+        "reset_confirm": {"action": "reset_confirm"},
+        "yes, reset everything": {"action": "reset_confirm"},
+        "yes reset everything": {"action": "reset_confirm"},
+        "confirm reset": {"action": "reset_confirm"},
+        "yes, reset": {"action": "reset_confirm"},
+        "back": {"action": "back"},
+        "go back": {"action": "back"},
+        "approve": {"action": "approve"},
+        "yes": {"action": "approve"},
+        "cancel": {"action": "cancel"},
+        "no": {"action": "cancel"},
+    }
+    for phrase, result in _prose_map.items():
+        if _lower == phrase:
+            return result
+
     # Only call fast() if the text looks like a card selection
     card_keywords = (
         "action", "plan_id", "item_id", "event_id", "block",
         "approve", "cancel", "open_task", "plan_task",
         "draft_ext", "snooze", "add_event", "check_links", "linked",
-        "upgrade",
+        "upgrade", "reset_confirm", "skip_app", "connect_app",
     )
     lower = stripped.lower()
     if not any(kw in lower for kw in card_keywords):

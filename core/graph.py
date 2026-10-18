@@ -133,7 +133,7 @@ async def classify_node(state: GraphState) -> dict:
 
     if any(k in lower for k in ("summary", "what happened", "update me", "brief me", "what's new", "whats new", "catch me up", "catch up")):
         return {"intent": "summary"}
-    if any(k in lower for k in ("reset", "clear account", "start over", "disconnect all", "delete account", "remove all")):
+    if any(k in lower for k in ("reset", "clear account", "clear all", "start over", "disconnect all", "delete account", "remove all", "wipe")):
         return {"intent": "reset"}
     if any(k in lower for k in ("plan", "week", "schedule", "organiz", "priorit", "assign", "task", "deadline", "due")):
         return {"intent": "plan_week"}
