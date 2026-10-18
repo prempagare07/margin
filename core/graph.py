@@ -121,7 +121,8 @@ async def classify_node(state: GraphState) -> dict:
         return {"intent": action}
 
     lower = (state["text"] or "").lower()
-    if any(k in lower for k in ("plan", "week", "schedule", "organiz", "priorit")):
+    logger.info("classify: text=%r", lower[:120])
+    if any(k in lower for k in ("plan", "week", "schedule", "organiz", "priorit", "assign", "task", "deadline", "due")):
         return {"intent": "plan_week"}
     if any(k in lower for k in ("upgrade", "pro ", "finals pack", "subscribe")):
         return {"intent": "upgrade"}
@@ -138,7 +139,8 @@ async def classify_node(state: GraphState) -> dict:
                     "content": (
                         "Classify the student message into exactly one of: "
                         "plan_week, open_task, budget, upgrade, snooze, chat. "
-                        "Reply with that one word only."
+                        "Reply with that one word only. "
+                        "Use plan_week for any request to plan, schedule, organize, or block time."
                     ),
                 },
                 {"role": "user", "content": state["text"]},
@@ -147,6 +149,7 @@ async def classify_node(state: GraphState) -> dict:
         )
         intent = (reply or "chat").strip().lower().split()[0]
         valid = {"plan_week", "open_task", "budget", "upgrade", "snooze", "chat"}
+        logger.info("classify: llm_intent=%s", intent)
         return {"intent": intent if intent in valid else "chat"}
     except Exception:
         return {"intent": "chat"}
