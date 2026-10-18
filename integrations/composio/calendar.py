@@ -263,9 +263,9 @@ async def auto_select_calendars(user_id: str) -> dict:
         raise _error("PARTIAL_RESULT")
     writable = [option for option in batch.records if option.writable]
     primary = [option for option in writable if option.primary]
-    if len(primary) == 1:
-        target = primary[0]
-    elif not primary and len(writable) == 1:
+    if primary:
+        target = primary[0]  # pick first primary (usually the main Google calendar)
+    elif writable:
         target = writable[0]
     else:
         raise _error("CALENDAR_SELECTION_REQUIRED")

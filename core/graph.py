@@ -271,12 +271,13 @@ async def _gather_inbox(req: Any) -> Any:
 async def _gather_planner(req: Any) -> Any:
     from shared.protocol import GatherResult
     from integrations.composio_tools import (
-        fetch_calendar_events, compute_free_slots,
+        auto_select_calendars, fetch_calendar_events, compute_free_slots,
         cache_items, filter_items, cached_gather_result,
         IntegrationError,
     )
     from db import repo
-    try:
+
+    async def _fetch() -> GatherResult:
         batch = await fetch_calendar_events(req.user_id, start=req.window_start, end=req.window_end)
         connection = await repo.get_connection(req.user_id, "gcal")
         account_id = (connection or {}).get("composio_account_id")
@@ -292,7 +293,18 @@ async def _gather_planner(req: Any) -> Any:
         )
         return GatherResult(request_id=req.request_id, agent="planner",
                             items=items, free_slots=free_slots)
+
+    try:
+        return await _fetch()
     except IntegrationError as exc:
+        if getattr(exc, "code", "") == "CALENDAR_SELECTION_REQUIRED":
+            # Auto-select the primary calendar and retry once
+            logger.info("gather_direct: planner: auto-selecting calendars for %s", req.user_id[:20])
+            try:
+                await auto_select_calendars(req.user_id)
+                return await _fetch()
+            except Exception as retry_exc:
+                logger.warning("gather_direct: planner auto-select retry failed: %s", retry_exc)
         result = await cached_gather_result(req, "gcal", error=exc)
         return result
     except Exception as exc:
@@ -408,7 +420,9 @@ async def plan_week_node(state: GraphState) -> dict:
     """Call Step 5 to schedule items into free slots."""
     items = state["items"]
     slots = state["free_slots"]
-    if state.get("gather_error") or not items or not slots:
+    # Only abort if we have nothing to work with — non-critical errors (Plaid,
+    # campus events) still let us plan with Canvas/Gmail items + GCal slots.
+    if not items or not slots:
         return {"actions": []}
 
     item_lines = "\n".join(
