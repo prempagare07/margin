@@ -51,6 +51,17 @@ await send_text(user_id, "You've spent 70% of your weekly budget.")
 
 ## Alex → Prem (what Prem's side expects from Alex's code)
 
+### Canvas feed reader and connection page
+
+Implemented in `integrations/canvas_client.py`, `web/canvas_connect.py`, and
+`web/connect_state.py`. See [CANVAS.md](CANVAS.md) for setup and agent wiring.
+Academic can call `await canvas_client.gather(request)` and return its
+`GatherResult` directly. Issue a signed connection link using
+`make_connect_url(authenticated_sender)`. The page validates and encrypts a
+calendar feed under that user; no Canvas API token is required. `PUBLIC_BASE_URL`
+must be the deployed HTTPS origin before issuing public links. The specialist
+handler and orchestrator connection-card wiring remain with their owners.
+
 ### `db.repo` — async database helpers
 
 These functions are implemented in `db.repo`; Prem's approval, graph, and

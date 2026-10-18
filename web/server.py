@@ -11,10 +11,13 @@ load_dotenv()
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from standardwebhooks import Webhook, WebhookVerificationError
 
 from core.observability import init as _sentry_init
+from web.canvas_connect import router as canvas_router
+from web.privacy import install_access_filter
+install_access_filter()
 _sentry_init()
 
 logger = logging.getLogger(__name__)
@@ -26,12 +29,17 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     from channels.scheduler import start_scheduler, stop_scheduler
+    from db.repo import close_pool
     start_scheduler()
-    yield
-    stop_scheduler()
+    try:
+        yield
+    finally:
+        stop_scheduler()
+        await close_pool()
 
 
 app = FastAPI(title="Margin", docs_url=None, redoc_url=None, lifespan=_lifespan)
+app.include_router(canvas_router)
 
 _WEBHOOK_SECRET = os.environ.get("PHOTON_WEBHOOK_SECRET", "")
 
@@ -105,21 +113,8 @@ async def _dispatch(phone: str, text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Canvas connect (Alex's pages — stubs kept here until his code lands)
+# Shared completion page
 # ---------------------------------------------------------------------------
-
-@app.get("/connect/canvas", response_class=HTMLResponse)
-async def canvas_connect_get(token: str = "") -> HTMLResponse:
-    return HTMLResponse(
-        "<html><body><h2>Connect Canvas</h2>"
-        "<p>Canvas connection page — coming soon.</p></body></html>"
-    )
-
-
-@app.post("/connect/canvas")
-async def canvas_connect_post(request: Request) -> JSONResponse:
-    return JSONResponse({"ok": False, "error": "not_implemented"}, status_code=501)
-
 
 @app.get("/connected", response_class=HTMLResponse)
 async def connected() -> HTMLResponse:
