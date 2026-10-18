@@ -104,9 +104,11 @@ class GraphState(TypedDict):
 # ---------------------------------------------------------------------------
 
 async def classify_node(state: GraphState) -> dict:
+    import sentry_sdk
     sel = state.get("selection") or {}
     action = sel.get("action", "")
     if action:
+        sentry_sdk.logger.info("classify: user=%s action=%s", state["user_id"], action)
         return {"intent": action}
 
     lower = (state["text"] or "").lower()
@@ -142,7 +144,7 @@ async def classify_node(state: GraphState) -> dict:
 async def gather_node(state: GraphState) -> dict:
     """Gather items + free slots from specialists (or fixtures)."""
     async with aspan("agent.gather", "gather items", user_id=state["user_id"]) as s:
-        if FAKE or not _is_agent_ctx(state["ctx"]):
+        if FAKE:
             items, slots = _fake_items(), _fake_slots()
         else:
             items, slots = await _gather_from_specialists(
@@ -150,12 +152,14 @@ async def gather_node(state: GraphState) -> dict:
             )
         if s:
             s.set_data("item_count", len(items))
+        import sentry_sdk
+        sentry_sdk.logger.info("gather: %d items for user %s", len(items), state["user_id"])
         return {"items": items, "free_slots": slots}
 
 
 def _is_agent_ctx(ctx: Any) -> bool:
     """True when ctx is a real uAgent Context (not PhotonCtx)."""
-    return hasattr(ctx, "_agent") or hasattr(ctx, "address")
+    return not hasattr(ctx, "_phone")  # PhotonCtx has _phone; real Context does not
 
 
 async def _gather_from_specialists(ctx: Any, user_id: str, sender: str) -> tuple[list, list]:
@@ -438,6 +442,64 @@ async def execute_node(state: GraphState) -> dict:
     return {}
 
 
+async def connect_node(state: GraphState) -> dict:
+    """Handle Connect form submission: save profile, show app-link card."""
+    import sentry_sdk
+    ctx = state["ctx"]
+    sender = state["sender"]
+    channel = state["channel"]
+    user_id = state["user_id"]
+    sel = state.get("selection") or {}
+
+    phone = sel.get("phone", "").strip()
+    monthly_income = float(sel.get("monthly_income") or 0)
+    weekly_cap = float(sel.get("weekly_cap") or 0) or None
+    savings_goal = float(sel.get("savings_goal") or 0) or None
+
+    try:
+        from db import repo
+        await repo.upsert_user(
+            user_id=user_id,
+            phone=phone or None,
+            monthly_income=monthly_income,
+            weekly_cap=weekly_cap,
+            savings_goal=savings_goal,
+        )
+        sentry_sdk.logger.info("connect: profile saved for user %s", user_id)
+    except Exception as exc:
+        logger.warning("connect: DB upsert failed: %s", exc)
+
+    if channel != "asi1":
+        await send_text(ctx, sender,
+            "Got it! Open ASI:One and connect Canvas, Gmail, and Google Calendar to finish setup.")
+        return {}
+
+    base = os.environ.get("PUBLIC_BASE_URL", "https://inappmargin.vip")
+    try:
+        from web.connect_state import make_state
+        canvas_url = f"{base}/connect/canvas?state={make_state(user_id)}"
+    except Exception:
+        canvas_url = f"{base}/connect/canvas"
+
+    links = {"Canvas": canvas_url}
+
+    try:
+        from integrations.composio_tools import connect_link
+        for app in ("gmail", "googlecalendar", "slack"):
+            try:
+                url = await connect_link(user_id, app)
+                label = {"gmail": "Gmail", "googlecalendar": "Google Calendar", "slack": "Slack"}[app]
+                links[label] = url
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.warning("connect: composio links failed: %s", exc)
+
+    from core.cards import link_buttons
+    await ctx.send(sender, link_buttons(links))
+    return {}
+
+
 async def cancel_node(state: GraphState) -> dict:
     ctx = state["ctx"]
     sender = state["sender"]
@@ -530,10 +592,12 @@ async def upgrade_node(state: GraphState) -> dict:
 
 
 async def chat_node(state: GraphState) -> dict:
+    import sentry_sdk
     ctx = state["ctx"]
     sender = state["sender"]
     channel = state["channel"]
     text = state["text"].lower().strip()
+    sentry_sdk.logger.info("chat: user=%s intent=%s text=%r", state["user_id"], state.get("intent"), text[:80])
 
     # Greetings → show the Connect onboarding form (ASI:One) or prompt (Photon)
     greetings = {"hi", "hello", "hey", "start", "help", "get started", "setup", "set up"}
@@ -574,6 +638,7 @@ async def chat_node(state: GraphState) -> dict:
 
 def _route(state: GraphState) -> str:
     routes: dict[str, str] = {
+        "connect":    "connect",
         "plan_week":  "gather",
         "approve":    "execute",
         "cancel":     "cancel",
@@ -594,6 +659,7 @@ def _build() -> Any:
     g = StateGraph(GraphState)
     for name, fn in [
         ("classify",   classify_node),
+        ("connect",    connect_node),
         ("gather",     gather_node),
         ("plan_week",  plan_week_node),
         ("store_plan", store_plan_node),
@@ -609,6 +675,7 @@ def _build() -> Any:
     g.add_conditional_edges(
         "classify", _route,
         {
+            "connect":    "connect",
             "gather":     "gather",
             "execute":    "execute",
             "cancel":     "cancel",
@@ -619,7 +686,7 @@ def _build() -> Any:
     )
     g.add_edge("gather",     "plan_week")
     g.add_edge("plan_week",  "store_plan")
-    for terminal in ("store_plan", "execute", "cancel", "priorities", "upgrade", "chat"):
+    for terminal in ("connect", "store_plan", "execute", "cancel", "priorities", "upgrade", "chat"):
         g.add_edge(terminal, END)
 
     return g.compile()
