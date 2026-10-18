@@ -706,8 +706,10 @@ async def connect_node(state: GraphState) -> dict:
         )
     await send_text(ctx, sender, phone_msg)
 
-    # Walk through app connections one at a time
-    await _send_next_app_card(ctx, sender, state["user_id"], _ALL_APPS)
+    # Show all app connection links — give ASI:One a moment between messages
+    import asyncio as _aio
+    await _aio.sleep(0.5)
+    await _send_app_links_card(ctx, sender, state["user_id"])
     return {}
 
 
@@ -744,6 +746,39 @@ _APP_DESCRIPTIONS = {
     "Google Calendar": "Find free slots and block study time — you approve every event.",
     "Slack": "Catch action items from club channels and group chats.",
 }
+
+
+async def _send_app_links_card(ctx, sender: str, user_id: str) -> None:
+    """Show link_buttons card with all app OAuth links at once."""
+    from core.cards import link_buttons
+    base = os.environ.get("PUBLIC_BASE_URL", "https://inappmargin.vip")
+    links: dict[str, str] = {}
+
+    try:
+        from web.connect_state import make_state
+        links["Canvas"] = f"{base}/connect/canvas?state={make_state(user_id)}"
+    except Exception as exc:
+        logger.warning("app_links: canvas url failed: %s", exc)
+        links["Canvas"] = f"{base}/connect/canvas"
+
+    for app_name, provider, label in [
+        ("gmail", "gmail", "Gmail"),
+        ("googlecalendar", "googlecalendar", "Google Calendar"),
+        ("slack", "slack", "Slack"),
+    ]:
+        try:
+            from integrations.composio_tools import connect_link
+            links[label] = await connect_link(user_id, app_name)
+        except Exception as exc:
+            logger.warning("app_links: composio link failed app=%s: %s", app_name, exc)
+
+    logger.info("app_links: sending link_buttons with %d apps to %s", len(links), sender[:20])
+    try:
+        await ctx.send(sender, link_buttons(links))
+    except Exception as exc:
+        logger.error("app_links: ctx.send failed: %s", exc)
+        text = "Connect your apps to unlock Margin:\n" + "\n".join(f"• {app}: {url}" for app, url in links.items())
+        await send_text(ctx, sender, text)
 
 
 async def _send_next_app_card(ctx, sender: str, user_id: str, apps: list[str]) -> None:
@@ -792,16 +827,17 @@ async def chat_node(state: GraphState) -> dict:
     text = state["text"].lower().strip()
     logger.info("chat: intent=%s", state.get("intent"))
 
-    # App linked or skipped → show next app in the sequence
-    if state.get("intent") in ("linked", "skip_app"):
+    # App linked or skipped → confirm and re-show the full connect card
+    if state.get("intent") in ("linked", "skip_app", "check_links"):
         sel = state.get("selection") or {}
         app = sel.get("app", "")
-        remaining = sel.get("remaining") or []
         if app and state.get("intent") == "linked":
-            await send_text(ctx, sender, f"{app} connected ✓")
+            await send_text(ctx, sender, f"{app} connected ✓ Connect more apps below, or say 'plan my week'.")
         elif app:
-            await send_text(ctx, sender, f"Skipping {app} for now.")
-        await _send_next_app_card(ctx, sender, state["user_id"], remaining)
+            await send_text(ctx, sender, f"Skipped {app}. Connect more apps below, or say 'plan my week'.")
+        else:
+            await send_text(ctx, sender, "Connect your apps so Margin can read your schedule:")
+        await _send_app_links_card(ctx, sender, state["user_id"])
         return {}
 
     # Greetings → welcome carousel then connect form (ASI:One) or prompt (Photon)
