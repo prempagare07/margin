@@ -1,4 +1,5 @@
-"""Starts all five Margin agents. Owner: Prem."""
+"""Starts all five Margin agents, each on its own port and event loop. Owner: Prem."""
+import asyncio
 import json
 import os
 import threading
@@ -18,7 +19,6 @@ from uagents_core.contrib.protocols.chat import (
     chat_protocol_spec,
 )
 
-# Each agent gets its own port so the local inspector can reach it.
 AGENT_CONFIGS = [
     ("margin",          "MARGIN_SEED",   8000),
     ("margin-academic", "ACADEMIC_SEED", 8001),
@@ -73,24 +73,32 @@ def _make_stub_proto(name: str) -> Protocol:
     return proto
 
 
-def _make_agent(name: str, seed_env: str, port: int) -> Agent:
+def _run_agent(name: str, seed_env: str, port: int) -> None:
+    """Create and run one agent in its own event loop (called inside a thread)."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     seed = os.environ[seed_env]
     agent = Agent(name=name, seed=seed, port=port, mailbox=True)
     agent.include(_make_stub_proto(name), publish_manifest=True)
-    return agent
-
-
-AGENTS = [_make_agent(name, seed_env, port) for name, seed_env, port in AGENT_CONFIGS]
+    try:
+        loop.run_until_complete(agent.run_async())
+    finally:
+        loop.close()
 
 
 def _print_addresses() -> None:
-    addresses = {}
+    """Derive addresses from seeds and print inspector links."""
+    from uagents_core.identity import Identity
+
+    addresses: dict[str, str] = {}
     print("\n=== Margin Agents ===")
-    for agent, (_, _, port) in zip(AGENTS, AGENT_CONFIGS):
-        inspector = AGENTVERSE_BASE.format(port=port, address=agent.address)
-        print(f"  {agent.name:<20} {agent.address}  port={port}")
+    for name, seed_env, port in AGENT_CONFIGS:
+        seed = os.environ[seed_env]
+        address = Identity.from_seed(seed=seed, index=0).address
+        inspector = AGENTVERSE_BASE.format(port=port, address=address)
+        print(f"  {name:<20} {address}  port={port}")
         print(f"  {'':20} inspector: {inspector}")
-        addresses[agent.name] = agent.address
+        addresses[name] = address
     print()
     os.makedirs("agents", exist_ok=True)
     with open("agents/addresses.json", "w") as f:
@@ -101,10 +109,12 @@ def _print_addresses() -> None:
 
 if __name__ == "__main__":
     _print_addresses()
-    threads = [
-        threading.Thread(target=agent.run, daemon=True)
-        for agent in AGENTS[1:]  # specialists in background threads
-    ]
-    for t in threads:
+
+    threads = []
+    for cfg in AGENT_CONFIGS[1:]:
+        t = threading.Thread(target=_run_agent, args=cfg, daemon=True)
         t.start()
-    AGENTS[0].run()  # margin (orchestrator) runs on main thread
+        threads.append(t)
+
+    # Run margin (orchestrator) on the main thread
+    _run_agent(*AGENT_CONFIGS[0])
