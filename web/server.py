@@ -9,29 +9,29 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import sentry_sdk
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from standardwebhooks import Webhook, WebhookVerificationError
 
+from core.observability import init as _sentry_init
+_sentry_init()
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Sentry (best-effort)
+# App with scheduler lifespan
 # ---------------------------------------------------------------------------
-_dsn = os.environ.get("SENTRY_DSN", "")
-if _dsn:
-    sentry_sdk.init(
-        dsn=_dsn,
-        traces_sample_rate=0.2,
-        send_default_pii=False,
-        environment=os.environ.get("ENV", "dev"),
-    )
 
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
-app = FastAPI(title="Margin", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    from channels.scheduler import start_scheduler, stop_scheduler
+    start_scheduler()
+    yield
+    stop_scheduler()
+
+
+app = FastAPI(title="Margin", docs_url=None, redoc_url=None, lifespan=_lifespan)
 
 _WEBHOOK_SECRET = os.environ.get("PHOTON_WEBHOOK_SECRET", "")
 

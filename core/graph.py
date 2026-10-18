@@ -11,6 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
 from core import approval
+from core.observability import aspan
 from core.cards import (
     connect_form,
     done as done_card,
@@ -140,13 +141,16 @@ async def classify_node(state: GraphState) -> dict:
 
 async def gather_node(state: GraphState) -> dict:
     """Gather items + free slots from specialists (or fixtures)."""
-    if FAKE:
-        return {"items": _fake_items(), "free_slots": _fake_slots()}
-
-    # Real path: call Alex's specialist agents via ctx.send_and_receive
-    # Temporarily fall back to fixtures until specialist agents are wired
-    logger.info("gather_node: FAKE_SPECIALISTS=0 but real call not yet wired — using fixtures")
-    return {"items": _fake_items(), "free_slots": _fake_slots()}
+    async with aspan("agent.gather", "gather items", user_id=state["user_id"]) as s:
+        if FAKE:
+            items, slots = _fake_items(), _fake_slots()
+        else:
+            # Real path: wire ctx.send_and_receive to specialist agents
+            logger.info("gather_node: real specialists not yet wired — using fixtures")
+            items, slots = _fake_items(), _fake_slots()
+        if s:
+            s.set_data("item_count", len(items))
+        return {"items": items, "free_slots": slots}
 
 
 class _Action(BaseModel):
