@@ -7,8 +7,12 @@ from core import approval
 
 def _actions(n: int = 2) -> list[dict]:
     return [
-        {"action_id": f"a{i}", "type": "create_event",
-         "title": f"Task {i}", "summary_row": f"Task {i}"}
+        {
+            "action_id": f"a{i}",
+            "type": "create_event",
+            "params": {"title": f"Task {i}", "start_iso": "2026-10-20T09:00:00+00:00",
+                       "end_iso": "2026-10-20T11:00:00+00:00", "item_id": f"item{i}"},
+        }
         for i in range(1, n + 1)
     ]
 

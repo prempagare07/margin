@@ -239,19 +239,20 @@ async def _execute_action(
     from shared.protocol import ActionRequest
 
     action_type = action.get("type", "create_event")
-    params = {
-        "title": action.get("title", "Margin block"),
-        "start_iso": action.get("start_iso", ""),
-        "end_iso": action.get("end_iso", ""),
-        "description": f"Scheduled by Margin (plan {plan_id})",
-    }
+    raw_params = action.get("params") or {}
 
     # Route: create_event/add_reminder → planner, create_draft → inbox
     if action_type == "create_draft":
         specialist = "margin-inbox"
-        params = {k: action.get("params", {}).get(k, "") for k in ("to", "subject", "body")}
+        params = {k: raw_params.get(k, "") for k in ("to", "subject", "body")}
     else:
         specialist = "margin-planner"
+        params = {
+            "title": raw_params.get("title", "Margin block"),
+            "start_iso": raw_params.get("start_iso", ""),
+            "end_iso": raw_params.get("end_iso", ""),
+            "description": f"Scheduled by Margin (plan {plan_id})",
+        }
 
     if FAKE or not _is_agent_ctx(ctx):
         return "https://calendar.google.com", None
@@ -280,14 +281,18 @@ async def _execute_action(
         return None, str(exc)
 
 
-class _Action(BaseModel):
-    action_id: str
-    type: str
+class _ActionParams(BaseModel):
     title: str
     item_id: str
     start_iso: str
     end_iso: str
     summary_row: str = ""
+
+
+class _Action(BaseModel):
+    action_id: str
+    type: str
+    params: _ActionParams
 
 
 class _PlanOut(BaseModel):
@@ -315,10 +320,10 @@ async def plan_week_node(state: GraphState) -> dict:
             "role": "system",
             "content": (
                 "You are a student planner. Assign each open item to a free slot "
-                "and return a JSON object {\"actions\": [...]}. Each action needs: "
-                "action_id (unique, e.g. 'a1'), type ('create_event'), title, "
-                "item_id, start_iso (ISO 8601 UTC), end_iso, summary_row "
-                "(≤50 chars for a review card). Max 8 actions."
+                "and return a JSON object {\"actions\": [...]}. Each action: "
+                "{action_id (unique, e.g. 'a1'), type ('create_event'), "
+                "params: {title, item_id, start_iso (ISO 8601 UTC), end_iso, "
+                "summary_row (≤50 chars for review card)}}. Max 8 actions."
             ),
         },
         {
@@ -333,18 +338,19 @@ async def plan_week_node(state: GraphState) -> dict:
         logger.info("plan_week: %d actions via %s", len(actions), model)
     except Exception as exc:
         logger.warning("plan_week LLM failed: %s — using fallback", exc)
-        # Fallback: one block per item using the available slots
         actions = []
         for i, item in enumerate(items[:5]):
             slot = slots[i] if i < len(slots) else None
             actions.append({
                 "action_id": f"a{i + 1}",
                 "type": "create_event",
-                "title": f"Work on: {item['title']}",
-                "item_id": item["item_id"],
-                "start_iso": slot[0] if slot else datetime.now(timezone.utc).isoformat(),
-                "end_iso": slot[1] if slot else datetime.now(timezone.utc).isoformat(),
-                "summary_row": item["title"][:50],
+                "params": {
+                    "title": f"Work on: {item['title']}",
+                    "item_id": item["item_id"],
+                    "start_iso": slot[0] if slot else datetime.now(timezone.utc).isoformat(),
+                    "end_iso": slot[1] if slot else datetime.now(timezone.utc).isoformat(),
+                    "summary_row": item["title"][:50],
+                },
             })
 
     return {"actions": actions}
@@ -362,8 +368,8 @@ async def store_plan_node(state: GraphState) -> dict:
 
     rows = [
         {
-            "label": a.get("summary_row") or a["title"],
-            "value": a.get("start_iso", "")[:16].replace("T", " "),
+            "label": (a.get("params") or {}).get("summary_row") or (a.get("params") or {}).get("title", a.get("action_id", "")),
+            "value": ((a.get("params") or {}).get("start_iso", ""))[:16].replace("T", " "),
         }
         for a in actions
     ]
@@ -419,7 +425,8 @@ async def execute_node(state: GraphState) -> dict:
         link, error = await _execute_action(ctx, user_id, plan_id, action, addresses)
         await approval.complete_action(plan_id, aid, user_id, {"link": link}, error)
         if link:
-            results.append({"label": action.get("title", "Event"), "link": link})
+            p = action.get("params") or {}
+            results.append({"label": p.get("title", action.get("action_id", "Event")), "link": link})
 
     await approval.mark_done(plan_id, user_id)
 
