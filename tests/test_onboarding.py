@@ -256,3 +256,17 @@ async def test_webhook_ignores_agent_echo_and_duplicate_delivery(monkeypatch):
         assert (await post(client, event, "delivery-three")).status_code == 200
         await asyncio.sleep(0)
         dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_connected_page_renders_css_and_escapes_app_name():
+    from web import server
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=server.app), base_url="https://margin.test"
+    ) as client:
+        response = await client.get("/connected", params={"app": '<script>alert("x")</script>'})
+    assert response.status_code == 200
+    assert "body{" in response.text and "body{{" not in response.text
+    assert "<script>" not in response.text
+    assert "&lt;script&gt;" in response.text

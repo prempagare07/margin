@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
+from html import escape
 import logging
 import os
 
@@ -191,15 +192,15 @@ _CONNECTED_HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Connected — Margin</title>
 <style>
-  body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
         background:#0f0f0f;color:#e8e8e8;display:flex;align-items:center;
-        justify-content:center;min-height:100vh;margin:0;text-align:center;padding:24px;}}
-  .card{{background:#1a1a1a;border-radius:16px;padding:40px 32px;max-width:400px;width:100%;}}
-  .check{{font-size:56px;margin-bottom:16px;}}
-  h2{{margin:0 0 12px;font-size:22px;font-weight:600;}}
-  p{{margin:0;color:#aaa;font-size:15px;line-height:1.5;}}
-  .app{{display:inline-block;background:#2a2a2a;border-radius:8px;padding:4px 12px;
-        margin-top:16px;font-size:13px;color:#7dd87d;font-weight:500;}}
+        justify-content:center;min-height:100vh;margin:0;text-align:center;padding:24px;}
+  .card{background:#1a1a1a;border-radius:16px;padding:40px 32px;max-width:400px;width:100%;}
+  .check{font-size:56px;margin-bottom:16px;}
+  h2{margin:0 0 12px;font-size:22px;font-weight:600;}
+  p{margin:0;color:#aaa;font-size:15px;line-height:1.5;}
+  .app{display:inline-block;background:#2a2a2a;border-radius:8px;padding:4px 12px;
+        margin-top:16px;font-size:13px;color:#7dd87d;font-weight:500;}
 </style>
 </head>
 <body>
@@ -216,7 +217,7 @@ _CONNECTED_HTML = """<!DOCTYPE html>
 
 @app.get("/connected", response_class=HTMLResponse)
 async def connected(app: str = "App") -> HTMLResponse:
-    safe_app = app[:32].replace("<", "").replace(">", "").replace("&", "").replace(‘"’, "")
+    safe_app = escape(app[:32].strip(), quote=True)
     if not safe_app:
         safe_app = "App"
-    return HTMLResponse(_CONNECTED_HTML.format(app=safe_app))
+    return HTMLResponse(_CONNECTED_HTML.replace("{app}", safe_app))
