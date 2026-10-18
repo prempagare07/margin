@@ -108,7 +108,7 @@ async def classify_node(state: GraphState) -> dict:
     sel = state.get("selection") or {}
     action = sel.get("action", "")
     if action:
-        sentry_sdk.logger.info("classify: user=%s action=%s", state["user_id"], action)
+        sentry_sdk.logger.info("classify: user=" + state["user_id"] + " action=" + action)
         return {"intent": action}
 
     lower = (state["text"] or "").lower()
@@ -153,7 +153,7 @@ async def gather_node(state: GraphState) -> dict:
         if s:
             s.set_data("item_count", len(items))
         import sentry_sdk
-        sentry_sdk.logger.info("gather: %d items for user %s", len(items), state["user_id"])
+        sentry_sdk.logger.info("gather: " + str(len(items)) + " items for user " + state["user_id"])
         return {"items": items, "free_slots": slots}
 
 
@@ -442,64 +442,6 @@ async def execute_node(state: GraphState) -> dict:
     return {}
 
 
-async def connect_node(state: GraphState) -> dict:
-    """Handle Connect form submission: save profile, show app-link card."""
-    import sentry_sdk
-    ctx = state["ctx"]
-    sender = state["sender"]
-    channel = state["channel"]
-    user_id = state["user_id"]
-    sel = state.get("selection") or {}
-
-    phone = sel.get("phone", "").strip()
-    monthly_income = float(sel.get("monthly_income") or 0)
-    weekly_cap = float(sel.get("weekly_cap") or 0) or None
-    savings_goal = float(sel.get("savings_goal") or 0) or None
-
-    try:
-        from db import repo
-        await repo.upsert_user(
-            user_id=user_id,
-            phone=phone or None,
-            monthly_income=monthly_income,
-            weekly_cap=weekly_cap,
-            savings_goal=savings_goal,
-        )
-        sentry_sdk.logger.info("connect: profile saved for user %s", user_id)
-    except Exception as exc:
-        logger.warning("connect: DB upsert failed: %s", exc)
-
-    if channel != "asi1":
-        await send_text(ctx, sender,
-            "Got it! Open ASI:One and connect Canvas, Gmail, and Google Calendar to finish setup.")
-        return {}
-
-    base = os.environ.get("PUBLIC_BASE_URL", "https://inappmargin.vip")
-    try:
-        from web.connect_state import make_state
-        canvas_url = f"{base}/connect/canvas?state={make_state(user_id)}"
-    except Exception:
-        canvas_url = f"{base}/connect/canvas"
-
-    links = {"Canvas": canvas_url}
-
-    try:
-        from integrations.composio_tools import connect_link
-        for app in ("gmail", "googlecalendar", "slack"):
-            try:
-                url = await connect_link(user_id, app)
-                label = {"gmail": "Gmail", "googlecalendar": "Google Calendar", "slack": "Slack"}[app]
-                links[label] = url
-            except Exception:
-                pass
-    except Exception as exc:
-        logger.warning("connect: composio links failed: %s", exc)
-
-    from core.cards import link_buttons
-    await ctx.send(sender, link_buttons(links))
-    return {}
-
-
 async def cancel_node(state: GraphState) -> dict:
     ctx = state["ctx"]
     sender = state["sender"]
@@ -637,7 +579,7 @@ async def chat_node(state: GraphState) -> dict:
     sender = state["sender"]
     channel = state["channel"]
     text = state["text"].lower().strip()
-    sentry_sdk.logger.info("chat: user=%s intent=%s text=%r", state["user_id"], state.get("intent"), text[:80])
+    sentry_sdk.logger.info("chat: user=" + state["user_id"] + " intent=" + str(state.get("intent")) + " text=" + repr(text[:80]))
 
     # Greetings → show the Connect onboarding form (ASI:One) or prompt (Photon)
     greetings = {"hi", "hello", "hey", "start", "help", "get started", "setup", "set up"}
