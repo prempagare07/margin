@@ -265,8 +265,10 @@ async def auto_select_calendars(user_id: str) -> dict:
     primary = [option for option in writable if option.primary]
     if primary:
         target = primary[0]  # pick first primary (usually the main Google calendar)
-    elif writable:
+    elif len(writable) == 1:
         target = writable[0]
+    elif writable:
+        raise _error("CALENDAR_SELECTION_REQUIRED")
     else:
         raise _error("CALENDAR_SELECTION_REQUIRED")
     settings = {

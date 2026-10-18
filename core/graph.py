@@ -971,6 +971,11 @@ async def _get_onboarding_step(user_id: str) -> list[str]:
             st = await composio_tools.connection_status(user_id, provider)
             if st.status != "active":
                 remaining.append(label)
+            elif provider == "gcal" and not st.settings.get("calendar_ids"):
+                try:
+                    await composio_tools.auto_select_calendars(user_id)
+                except Exception:
+                    pass  # if auto-select fails, gcal is still considered connected
         except Exception:
             remaining.append(label)
 
