@@ -1,1 +1,3 @@
-# Caddy TLS and reverse proxy configuration. Owners: Devin, then Prem.
+inappmargin.vip {
+    reverse_proxy web:8080
+}
