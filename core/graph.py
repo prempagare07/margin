@@ -127,6 +127,8 @@ async def classify_node(state: GraphState) -> dict:
         return {"intent": "upgrade"}
     if any(k in lower for k in ("budget", "afford", "spend", "safe to")):
         return {"intent": "budget"}
+    if any(k in lower for k in ("connect", "linked", "app", "canvas", "gmail", "slack", "calendar", "integrat")):
+        return {"intent": "check_links"}
 
     try:
         reply = await fast(
@@ -871,15 +873,12 @@ async def connect_node(state: GraphState) -> dict:
             )
     await send_text(ctx, sender, phone_msg)
 
-    # Step through apps sequentially — show the first one not yet connected
-    await asyncio.sleep(0.6)
+    # Step through apps sequentially — one card per send to avoid rate limits
+    await asyncio.sleep(2)
     remaining = await _get_onboarding_step(user_id)
-    if remaining:
-        await send_text(ctx, sender,
-            f"Now let's connect your apps — {len(remaining)} to go. "
-            "You can skip any and add them later.")
-        await asyncio.sleep(0.3)
-    await _send_next_app_card(ctx, sender, user_id, remaining)
+    prefix = (f"Now let's connect your apps — {len(remaining)} to go. You can skip any and add them later."
+              if remaining else "")
+    await _send_next_app_card_with_context(ctx, sender, user_id, remaining, prefix=prefix)
     return {}
 
 
@@ -895,31 +894,31 @@ async def check_links_node(state: GraphState) -> dict:
         logger.info("check_links: verifying app=%s remaining=%s", app, remaining)
         ok = await _check_single_app(user_id, app)
         if ok:
-            await send_text(ctx, sender, f"{app} connected ✓")
-            await asyncio.sleep(0.4)
-            await _send_next_app_card(ctx, sender, user_id, remaining)
+            # Success: embed confirmation in next card's narration (one send)
+            await _send_next_app_card_with_context(ctx, sender, user_id, remaining,
+                prefix=f"{app} connected ✓")
         else:
+            # Not yet connected — re-show pending card with error context
             await send_text(ctx, sender,
-                f"Hmm, {app} doesn't seem to be connected yet. "
-                "Make sure you completed the authorization in the browser, then tap Done again.")
-            await asyncio.sleep(0.3)
+                f"Hmm, {app} doesn't seem connected yet. "
+                "Complete the authorization in the browser, then tap Done again.")
+            await asyncio.sleep(2)
             await ctx.send(sender, pending_connect_card(app, remaining))
         return {}
 
-    # Legacy "I've connected everything" — check all apps and report
+    # Legacy "I've connected everything" or "are my apps connected" query
     remaining_all = await _get_onboarding_step(user_id)
     connected_names = [a for a in _ONBOARDING_ORDER if a not in remaining_all]
 
-    if connected_names:
-        await send_text(ctx, sender, "Connected: " + ", ".join(connected_names) + " ✓")
-
     if not remaining_all:
         await send_text(ctx, sender,
-            "All apps connected! Say 'plan my week' to get started.")
+            "All apps connected ✓ — Canvas, Gmail, Google Calendar, Slack. "
+            "Say 'plan my week' to get started!")
         return {}
 
-    await asyncio.sleep(0.4)
-    await _send_next_app_card(ctx, sender, user_id, remaining_all)
+    names = ", ".join(connected_names) if connected_names else "none yet"
+    prefix = f"Connected: {names} ✓" if connected_names else "No apps connected yet."
+    await _send_next_app_card_with_context(ctx, sender, user_id, remaining_all, prefix=prefix)
     return {}
 
 
@@ -1009,50 +1008,68 @@ async def _send_app_links_card(ctx, sender: str, user_id: str,
         await send_text(ctx, sender, text)
 
 
+async def _build_app_card_url(user_id: str, app_name: str) -> str:
+    """Generate the OAuth/connect URL for an app. Returns '' on failure."""
+    base = os.environ.get("PUBLIC_BASE_URL", "https://inappmargin.vip")
+    if app_name == "Canvas":
+        try:
+            from web.connect_state import make_connect_url
+            return make_connect_url(user_id)
+        except Exception as exc:
+            logger.warning("app_card: canvas url failed: %s", exc)
+            return f"{base}/connect/canvas"
+    _composio_id = {"Gmail": "gmail", "Google Calendar": "gcal", "Slack": "slack"}
+    cid = _composio_id.get(app_name)
+    if cid:
+        try:
+            from integrations.composio_tools import connect_link
+            return await connect_link(user_id, cid)
+        except Exception as exc:
+            logger.warning("app_card: composio link failed app=%s: %s", app_name, exc)
+    return ""
+
+
 async def _send_next_app_card(ctx, sender: str, user_id: str, apps: list[str]) -> None:
     """Show a sequential connect card for the first app in the list."""
+    await _send_next_app_card_with_context(ctx, sender, user_id, apps)
+
+
+async def _send_next_app_card_with_context(
+    ctx, sender: str, user_id: str, apps: list[str], prefix: str = ""
+) -> None:
+    """Send the next app card. prefix is embedded in the card narration (one send, no rate-limit)."""
     if not apps:
         await send_text(ctx, sender,
-            "You're all set! Say 'plan my week' to block time for your assignments, "
-            "or ask me anything about your schedule.")
+            "You're all set! Say 'plan my week' to block time for your assignments.")
         return
 
     app_name = apps[0]
     remaining = apps[1:]
-    base = os.environ.get("PUBLIC_BASE_URL", "https://inappmargin.vip")
-    url = ""
+    url = await _build_app_card_url(user_id, app_name)
 
-    if app_name == "Canvas":
-        try:
-            from web.connect_state import make_connect_url
-            url = make_connect_url(user_id)
-        except Exception as exc:
-            logger.warning("app_card: canvas url failed: %s", exc)
-            url = f"{base}/connect/canvas"
-    else:
-        _composio_id = {"Gmail": "gmail", "Google Calendar": "gcal", "Slack": "slack"}
-        cid = _composio_id.get(app_name)
-        if cid:
-            try:
-                from integrations.composio_tools import connect_link
-                url = await connect_link(user_id, cid)
-            except Exception as exc:
-                logger.warning("app_card: composio link failed app=%s: %s", app_name, exc)
-
-    desc = _APP_DESCRIPTIONS.get(app_name, "")
     step_num = _ONBOARDING_ORDER.index(app_name) + 1 if app_name in _ONBOARDING_ORDER else 1
     total = step_num + len(remaining)
     logger.info("app_card: %s (%d/%d) url=%s", app_name, step_num, total, bool(url))
+
+    desc = _APP_DESCRIPTIONS.get(app_name, "")
+    narration = prefix or f"Step {step_num} of {total}: connect {app_name}."
     try:
-        await ctx.send(sender, app_connection_card(app_name, desc, url, remaining))
+        from core.cards import app_connection_card as _acc
+        msg = _acc(app_name, desc, url, remaining)
+        # Patch narration into card TextContent
+        from uagents_core.contrib.protocols.chat import TextContent
+        msg.content = [TextContent(type="text", text=narration)] + [
+            c for c in msg.content if not isinstance(c, TextContent)
+        ]
+        await ctx.send(sender, msg)
     except Exception as exc:
         logger.error("app_card: ctx.send failed for %s: %s", app_name, exc)
         if url:
-            await send_text(ctx, sender, f"Connect {app_name}: {url}")
+            await send_text(ctx, sender, f"{narration}\nConnect {app_name}: {url}")
         else:
             await send_text(ctx, sender,
-                f"Couldn't generate the {app_name} connection link right now. "
-                "Try tapping 'I've connected everything' to continue.")
+                f"{narration}\nCouldn't generate the {app_name} link right now — "
+                "try saying 'check my apps' to retry.")
 
 
 async def chat_node(state: GraphState) -> dict:
@@ -1079,10 +1096,8 @@ async def chat_node(state: GraphState) -> dict:
     if intent == "skip_app":
         app = sel.get("app", "")
         remaining = list(sel.get("remaining") or [])
-        if app:
-            await send_text(ctx, sender, f"Skipped {app} — you can connect it anytime later.")
-        await asyncio.sleep(0.3)
-        await _send_next_app_card(ctx, sender, user_id, remaining)
+        prefix = f"Skipped {app} — you can connect it anytime later." if app else ""
+        await _send_next_app_card_with_context(ctx, sender, user_id, remaining, prefix=prefix)
         return {}
 
     # Greetings — resume from wherever the user left off in onboarding
@@ -1093,23 +1108,20 @@ async def chat_node(state: GraphState) -> dict:
                 from db import repo
                 user = await repo.get_user(user_id)
                 if user:
-                    # User exists — find where they are in onboarding
                     remaining = await _get_onboarding_step(user_id)
                     if remaining:
-                        await send_text(ctx, sender,
-                            f"Welcome back! Still need to connect: {', '.join(remaining)}.")
-                        await asyncio.sleep(0.3)
-                        await _send_next_app_card(ctx, sender, user_id, remaining)
+                        # Send ONE card with context in the narration — avoids rate-limit
+                        await _send_next_app_card_with_context(ctx, sender, user_id, remaining,
+                            prefix=f"Welcome back! Still need to connect {len(remaining)} app(s).")
                     else:
                         await send_text(ctx, sender,
-                            "You're all set! Say 'plan my week' to get started, "
-                            "or ask me anything about your schedule.")
+                            "You're all set! Say 'plan my week' to get started.")
                     return {}
             except Exception as exc:
                 logger.warning("chat: user lookup failed: %s", exc)
-            # New user — show welcome + form
+            # New user
             await ctx.send(sender, welcome_card())
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(2)
             await ctx.send(sender, connect_form())
         else:
             await send_text(ctx, sender,
