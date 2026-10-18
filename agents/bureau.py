@@ -1,8 +1,6 @@
-"""Starts all five Margin agents, each on its own port and event loop. Owner: Prem."""
-import asyncio
+"""Starts all five Margin agents via uagents Bureau. Owner: Prem."""
 import json
 import os
-import threading
 
 from dotenv import load_dotenv
 
@@ -11,7 +9,8 @@ load_dotenv()
 from core.observability import init as _sentry_init
 _sentry_init()
 
-# Import real agent modules — each creates its Agent at module level
+from uagents import Bureau
+
 from agents.academic import agent as _academic
 from agents.inbox import agent as _inbox
 from agents.life import agent as _life
@@ -26,26 +25,13 @@ AGENT_CONFIGS = [
     ("margin-life",     "LIFE_SEED",     8004),
 ]
 
-_AGENT_OBJECTS = [_margin, _academic, _inbox, _planner, _life]
-
 AGENTVERSE_BASE = (
     "https://agentverse.ai/inspect/"
     "?uri=http%3A//127.0.0.1%3A{port}&address={address}"
 )
 
 
-def _run_agent(agent_obj) -> None:
-    """Run a pre-created agent in its own event loop (called inside a thread)."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(agent_obj.run_async())
-    finally:
-        loop.close()
-
-
 def _print_addresses() -> None:
-    """Derive addresses from seeds and print inspector links."""
     from uagents_core.identity import Identity
 
     addresses: dict[str, str] = {}
@@ -68,11 +54,10 @@ def _print_addresses() -> None:
 if __name__ == "__main__":
     _print_addresses()
 
-    threads = []
-    for agent_obj in _AGENT_OBJECTS[1:]:   # specialists in background threads
-        t = threading.Thread(target=_run_agent, args=(agent_obj,), daemon=True)
-        t.start()
-        threads.append(t)
-
-    # Run orchestrator on the main thread (blocks until Ctrl-C)
-    _run_agent(_AGENT_OBJECTS[0])
+    bureau = Bureau()
+    bureau.add(_margin)
+    bureau.add(_academic)
+    bureau.add(_inbox)
+    bureau.add(_planner)
+    bureau.add(_life)
+    bureau.run()
