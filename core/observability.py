@@ -31,6 +31,7 @@ def init() -> None:
         send_default_pii=False,
         include_local_variables=False,
         max_request_body_size="never",
+        enable_logs=True,
         integrations=[
             LoggingIntegration(
                 level=logging.INFO,
