@@ -39,7 +39,7 @@ agent = Agent(
 
 @agent.on_event("startup")
 async def _startup(ctx: Context) -> None:
-    logger.info("margin agent online: %s", ctx.address)
+    logger.info("margin agent online: %s", agent.address)
     start_scheduler()
 
 
