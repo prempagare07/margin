@@ -9,6 +9,7 @@ directly from the production schema, including all constraints and indexes.
 import asyncio
 import os
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import psycopg
@@ -17,7 +18,7 @@ import pytest_asyncio
 from cryptography.fernet import Fernet, InvalidToken
 from psycopg.conninfo import conninfo_to_dict
 
-from db import repo
+from db import plaid as plaid_store, repo
 from shared.protocol import Item
 
 pytestmark = pytest.mark.asyncio
@@ -544,3 +545,279 @@ async def test_budget_reads_posted_flexible_spend_and_bill_clamping():
     await repo.save_budget("alex", 1000, 100, 0)
     assert await repo.safe_to_spend("alex") == 0
     assert await repo.get_budget("other") is None
+
+
+def plaid_transaction(txn_id="txn-food", **changes):
+    return dict({
+        "txn_id": txn_id, "ts": datetime.now(timezone.utc), "amount": Decimal("12.50"),
+        "currency": "USD", "merchant": "Demo Cafe", "category": "FOOD_AND_DRINK", "pending": False,
+    }, **changes)
+
+
+async def plaid_secret(user_id="alex", **changes):
+    result = await plaid_store.initialize_connection(
+        user_id, **dict({"item_id": f"item-{user_id}", "access_token": f"sandbox-token-{user_id}"}, **changes),
+    )
+    return result["secret"]
+
+
+async def apply_plaid(secret, transactions=(), removed=(), *, user_id="alex", cursor="cursor-1", **changes):
+    return await plaid_store.apply_sync(
+        user_id, expected_secret=secret, transactions=list(transactions), removed_ids=list(removed),
+        next_cursor=cursor, synced_at=datetime.now(timezone.utc), **changes,
+    )
+
+
+async def plaid_rows(user_id="alex"):
+    async with (await repo.get_pool()).connection() as conn:
+        return await (await conn.execute(
+            "SELECT * FROM public.transactions WHERE user_id = %s ORDER BY txn_id", (user_id,),
+        )).fetchall()
+
+
+async def test_plaid_initialization_encrypts_and_preserves_existing_connection():
+    secret = await plaid_secret()
+    assert secret == {
+        "item_id": "item-alex", "access_token": "sandbox-token-alex", "environment": "sandbox",
+        "cursor": None, "last_synced_at": None,
+    }
+    assert await apply_plaid(secret, transactions_update_status="HISTORICAL_UPDATE_COMPLETE")
+    saved = await repo.get_connection("alex", "plaid")
+    existing = await plaid_store.initialize_connection("alex", item_id="unwanted-item", access_token="unwanted-token")
+    assert existing == saved
+    async with (await repo.get_pool()).connection() as conn:
+        raw = await (await conn.execute(
+            "SELECT secret_enc FROM public.connections WHERE user_id = 'alex' AND provider = 'plaid'"
+        )).fetchone()
+    assert b"sandbox-token-alex" not in bytes(raw["secret_enc"])
+    assert b"cursor-1" not in bytes(raw["secret_enc"])
+    assert existing["secret"]["transactions_update_status"] == "HISTORICAL_UPDATE_COMPLETE"
+    with pytest.raises(LookupError):
+        await plaid_secret("missing-user")
+    assert await repo.get_user("missing-user") is None
+    with pytest.raises(ValueError, match="sandbox"):
+        await plaid_secret(environment="production")
+
+
+async def test_plaid_concurrent_initialization_keeps_one_item():
+    results = await asyncio.gather(*(
+        plaid_store.initialize_connection("alex", item_id=f"item-{i}", access_token=f"sandbox-token-{i}")
+        for i in range(8)
+    ))
+    assert len({row["secret"]["item_id"] for row in results}) == 1
+    assert len({row["secret"]["access_token"] for row in results}) == 1
+
+
+async def test_plaid_idempotency_modifications_changed_timestamp_and_reintroduced_records():
+    secret = await plaid_secret()
+    original = plaid_transaction(ts=datetime(2026, 10, 18, 19, tzinfo=timezone.utc))
+    assert await apply_plaid(secret, [original])
+    assert not await apply_plaid(secret, [original])  # A stale page cannot move the cursor.
+    current = (await repo.get_connection("alex", "plaid"))["secret"]
+    assert await apply_plaid(current, [original], cursor="cursor-2")
+    assert len(await plaid_rows()) == 1
+    current = (await repo.get_connection("alex", "plaid"))["secret"]
+    corrected = dict(original, ts=original["ts"] + timedelta(days=1), amount=Decimal("15.25"), merchant="New name")
+    assert await apply_plaid(current, [corrected], cursor="cursor-3")
+    rows = await plaid_rows()
+    assert len(rows) == 1 and rows[0]["ts"] == corrected["ts"] and rows[0]["amount"] == Decimal("15.25")
+    current = (await repo.get_connection("alex", "plaid"))["secret"]
+    assert await apply_plaid(current, removed=["txn-food", "nonexistent"], cursor="cursor-4")
+    assert (await plaid_rows())[0]["is_removed"]
+    current = (await repo.get_connection("alex", "plaid"))["secret"]
+    assert await apply_plaid(current, [corrected], cursor="cursor-5")
+    assert len(await plaid_rows()) == 1 and not (await plaid_rows())[0]["is_removed"]
+
+
+async def test_plaid_pending_to_posted_and_removal_only_sync():
+    secret = await plaid_secret()
+    assert await apply_plaid(secret, [plaid_transaction("pending", pending=True)])
+    current = (await repo.get_connection("alex", "plaid"))["secret"]
+    assert await apply_plaid(current, [plaid_transaction("posted")], ["pending"], cursor="cursor-2")
+    rows = {row["txn_id"]: row for row in await plaid_rows()}
+    assert rows["pending"]["is_removed"] and rows["pending"]["pending"]
+    assert not rows["posted"]["pending"] and not rows["posted"]["is_removed"]
+    current = (await repo.get_connection("alex", "plaid"))["secret"]
+    assert await apply_plaid(current, removed=["posted"], cursor="cursor-3")
+    assert all(row["is_removed"] for row in await plaid_rows())
+
+
+@pytest.mark.parametrize("change", [
+    {"currency": "EUR"}, {"amount": Decimal("NaN")}, {"amount": float("inf")},
+    {"pending": "false"}, {"ts": datetime(2026, 10, 18)}, {"txn_id": ""},
+])
+async def test_plaid_invalid_batch_leaves_cursor_and_transactions_unchanged(change):
+    secret = await plaid_secret()
+    with pytest.raises(ValueError):
+        await apply_plaid(secret, [plaid_transaction("valid"), dict(plaid_transaction("invalid"), **change)])
+    assert await plaid_rows() == []
+    assert (await repo.get_connection("alex", "plaid"))["secret"] == secret
+
+
+async def test_plaid_sql_failure_rolls_back_rows_removals_and_cursor():
+    secret = await plaid_secret()
+    assert await apply_plaid(secret, [plaid_transaction("original")])
+    before = await plaid_rows()
+    current = (await repo.get_connection("alex", "plaid"))["secret"]
+    with pytest.raises(psycopg.errors.NumericValueOutOfRange):
+        await apply_plaid(current, [
+            plaid_transaction("original", amount=Decimal("99.00")),
+            plaid_transaction("overflow", amount=Decimal("10000000000.00")),
+        ], removed=["original"], cursor="should-not-save")
+    assert await plaid_rows() == before
+    assert (await repo.get_connection("alex", "plaid"))["secret"] == current
+
+
+async def test_plaid_competing_syncs_have_one_winner_and_cannot_revoke_newer_snapshot():
+    secret = await plaid_secret()
+    results = await asyncio.gather(*(
+        apply_plaid(secret, [plaid_transaction(f"txn-{i}")], cursor=f"cursor-{i}")
+        for i in range(8)
+    ))
+    assert sum(results) == 1 and len(await plaid_rows()) == 1
+    current = (await repo.get_connection("alex", "plaid"))["secret"]
+    assert not await plaid_store.mark_relink_required("alex", expected_secret=secret)
+    assert (await repo.get_connection("alex", "plaid"))["status"] == "active"
+    assert await plaid_store.mark_relink_required("alex", expected_secret=current)
+    assert not await apply_plaid(current, [plaid_transaction("late")], cursor="late")
+    saved = await repo.get_connection("alex", "plaid")
+    assert saved["status"] == "relink_required" and saved["secret"] == current
+
+
+async def test_plaid_metadata_or_replaced_item_prevents_delayed_sync():
+    secret = await plaid_secret()
+    changed = dict(secret, transactions_update_status="INITIAL_UPDATE_COMPLETE")
+    await repo.save_connection("alex", "plaid", secret=changed)
+    assert not await apply_plaid(secret, [plaid_transaction()])
+    replaced = dict(secret, item_id="replacement-item", access_token="replacement-token")
+    await repo.save_connection("alex", "plaid", secret=replaced)
+    assert not await apply_plaid(secret, [plaid_transaction()])
+    assert not await plaid_store.mark_relink_required("alex", expected_secret=secret)
+    assert await plaid_rows() == []
+    assert (await repo.get_connection("alex", "plaid"))["secret"] == replaced
+
+
+async def test_plaid_not_ready_empty_cursor_and_unchanged_cursor_still_guard_syncs():
+    secret = await plaid_secret()
+    assert await apply_plaid(secret, cursor="", transactions_update_status="NOT_READY")
+    current = (await repo.get_connection("alex", "plaid"))["secret"]
+    assert current["cursor"] == "" and current["transactions_update_status"] == "NOT_READY"
+    results = await asyncio.gather(*(
+        apply_plaid(current, cursor="", transactions_update_status="NOT_READY") for _ in range(4)
+    ))
+    assert sum(results) == 1
+    assert await plaid_rows() == []
+
+
+async def test_plaid_sync_isolates_same_transaction_id_between_users():
+    alex = await plaid_secret()
+    other = await plaid_secret("other")
+    assert await apply_plaid(alex, [plaid_transaction("shared-id", amount=10)])
+    assert await apply_plaid(other, [plaid_transaction("shared-id", amount=20)], user_id="other")
+    current = (await repo.get_connection("alex", "plaid"))["secret"]
+    assert not await apply_plaid(current, [plaid_transaction("shared-id", amount=99)], user_id="other")
+    assert await apply_plaid(current, removed=["shared-id"], cursor="cursor-2")
+    assert (await plaid_rows())[0]["is_removed"]
+    other_row = (await plaid_rows("other"))[0]
+    assert other_row["amount"] == 20 and not other_row["is_removed"]
+
+
+async def test_plaid_imported_transactions_drive_existing_safe_to_spend():
+    secret = await plaid_secret()
+    await repo.save_budget("alex", 2000, 100, None)
+    await repo.save_bill("alex", "Monthly bill", 200, 31)
+    original_safe = await repo.safe_to_spend("alex")
+    rows = [
+        plaid_transaction("food", amount=25),
+        plaid_transaction("uncategorized", amount=5, category=None),
+        plaid_transaction("pending", amount=100, pending=True),
+        plaid_transaction("removed", amount=100),
+        plaid_transaction("refund", amount=-5),
+        plaid_transaction("transfer", amount=100, category="TRANSFER_OUT"),
+        plaid_transaction("rent", amount=100, category="RENT_AND_UTILITIES"),
+    ]
+    assert await apply_plaid(secret, rows, ["removed"], transactions_update_status="HISTORICAL_UPDATE_COMPLETE")
+    async with (await repo.get_pool()).connection() as conn:
+        summary = await (await conn.execute(
+            "SELECT public.flexible_spent_this_month('alex') AS spent, (now() AT TIME ZONE 'America/Phoenix')::date AS today"
+        )).fetchone()
+    assert summary["spent"] == Decimal("30.00")
+    expected = repo._safe_to_spend(await repo.get_budget("alex"), await repo.get_bills("alex"), 30, summary["today"])
+    assert await repo.safe_to_spend("alex") == expected < original_safe
+    current = (await repo.get_connection("alex", "plaid"))["secret"]
+    assert await apply_plaid(current, rows, ["removed"], cursor="cursor-2")
+    assert await repo.safe_to_spend("alex") == expected
+
+
+async def test_plaid_adapter_pages_persist_once_then_replay_modify_remove_and_update_budget(monkeypatch):
+    """Only Plaid HTTP is replaced: normalization, cursor storage and budgets are real."""
+    from datetime import time
+    from integrations import plaid_sandbox as adapter
+
+    monkeypatch.setenv("PLAID_ENV", "sandbox")
+    await plaid_secret()
+    await repo.save_budget("alex", 2000, 100, None)
+    today = datetime.now(adapter.PHOENIX).date()
+    changed_time = datetime.combine(today, time(13), adapter.PHOENIX)
+
+    def raw(txn_id, amount, **changes):
+        return dict({
+            "transaction_id": txn_id, "amount": amount, "iso_currency_code": "USD",
+            "date": today.isoformat(), "pending": False, "merchant_name": "Demo Cafe",
+            "personal_finance_category": {"primary": "FOOD_AND_DRINK"},
+        }, **changes)
+
+    def page(cursor, *, added=(), modified=(), removed=(), more=False):
+        return dict(
+            added=list(added), modified=list(modified), removed=list(removed), next_cursor=cursor,
+            has_more=more, transactions_update_status="HISTORICAL_UPDATE_COMPLETE", request_id=f"request-{cursor}",
+        )
+
+    responses = [
+        page("c1", added=[raw("lunch", 25)], more=True),
+        page("c2", added=[raw("coffee", 5)]),
+        page("c2"),
+        page("c3", modified=[raw("lunch", 40, datetime=changed_time.isoformat())],
+             removed=[{"transaction_id": "coffee"}]),
+    ]
+    cursors = []
+
+    async def provider(operation, **kwargs):
+        assert operation == "sync" and kwargs["access_token"] == "sandbox-token-alex"
+        index = len(cursors)
+        cursors.append(kwargs["cursor"])
+        # The first page's changes/cursor stay invisible until the second page completes.
+        if index < 2:
+            assert await plaid_rows() == []
+            assert (await repo.get_connection("alex", "plaid"))["secret"]["cursor"] is None
+        else:
+            assert len(await plaid_rows()) == 2
+            assert (await repo.get_connection("alex", "plaid"))["secret"]["cursor"] == "c2"
+        return responses[index]
+
+    monkeypatch.setattr(adapter, "_provider_call", provider)
+    first = await adapter.sync_transactions("alex")
+    assert first.ready and first.pages == 2 and first.added == 2
+    assert first.request_ids == ("request-c1", "request-c2")
+    original = await plaid_rows()
+    assert len(original) == 2 and sum(row["amount"] for row in original) == 30
+    assert all(row["ts"] == datetime.combine(today, time(12), adapter.PHOENIX) for row in original)
+    saved = (await repo.get_connection("alex", "plaid"))["secret"]
+    assert saved["cursor"] == "c2" and saved["transactions_update_status"] == "HISTORICAL_UPDATE_COMPLETE"
+    assert saved["last_synced_at"] == repo._iso(first.last_synced_at)
+    expected = repo._safe_to_spend(await repo.get_budget("alex"), [], 30, today)
+    assert await repo.safe_to_spend("alex") == expected
+
+    second = await adapter.sync_transactions("alex")
+    assert second.ready and (second.added, second.modified, second.removed) == (0, 0, 0)
+    assert await plaid_rows() == original and await repo.safe_to_spend("alex") == expected
+
+    third = await adapter.sync_transactions("alex")
+    assert third.ready and third.modified == 1 and third.removed == 1
+    final = {row["txn_id"]: row for row in await plaid_rows()}
+    assert len(final) == 2 and final["lunch"]["amount"] == 40
+    assert final["lunch"]["ts"] == changed_time and final["coffee"]["is_removed"]
+    assert (await repo.get_connection("alex", "plaid"))["secret"]["cursor"] == "c3"
+    revised = repo._safe_to_spend(await repo.get_budget("alex"), [], 40, today)
+    assert await repo.safe_to_spend("alex") == revised < expected
+    assert cursors == [None, "c1", "c2", "c2"]

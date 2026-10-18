@@ -396,4 +396,15 @@ Alex's schema is the source of truth. Key changes Prem's code must handle:
 - `db/repo.py` is implemented and has local PostgreSQL integration tests. The existing Tiger Data schema is unchanged.
 - Prem must consume the updated protocol and database interface in the orchestrator, approval flow, and scheduler. This file records Alex's handoff; it does not claim Prem's runtime is already updated.
 - Step 1 verified read access through Composio for Gmail, Calendar, and Slack. Canvas iCal and the ASU campus-events calendar feed also parsed successfully. Credential presence alone is not a connection check for other providers.
-- Plaid, Stripe, Photon webhook verification, and deployment readiness belong to later setup and implementation checks.
+- Stripe, Photon webhook verification, and deployment readiness belong to later setup and implementation checks.
+
+## Plaid transaction integration
+
+See [PLAID.md](PLAID.md) for setup, API contracts, failure behavior, and test commands.
+`integrations.plaid_sandbox.sync_transactions(user_id)` now persists real Sandbox
+transaction deltas and its encrypted cursor atomically through `db/plaid.py`.
+Provision the demo Item explicitly with `scripts.plaid_sync --connect`; reads do
+not create bank connections. Life's `budget_snapshot` path uses the imported rows
+through `db.repo.safe_to_spend`, and `fetch_bills` reads configured recurring bills.
+No schema migration is needed. Full agent orchestration and scheduler integration
+remain separate from this adapter's verification.

@@ -14,7 +14,8 @@ apscheduler>=3.10,<4
 stripe
 composio==0.28.0
 jsonschema==4.26.0
-plaid-python
+plaid-python==45.0.0
+certifi
 icalendar
 python-dateutil
 pytest
