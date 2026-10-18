@@ -11,9 +11,11 @@ load_dotenv()
 from uagents import Agent, Context
 
 from channels.scheduler import start_scheduler, stop_scheduler
+from core import gather as gather_bus
 from core import graph
 from core.cards import connect_form
 from core.chat import make_chat_protocol
+from shared.protocol import ActionRequest, ActionResult, GatherResult
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,25 @@ _proto = make_chat_protocol(
 )
 
 agent.include(_proto, publish_manifest=True)
+
+
+# ---------------------------------------------------------------------------
+# GatherResult handler — resolves futures created in graph.gather_node
+# ---------------------------------------------------------------------------
+
+@agent.on_message(GatherResult)
+async def _on_gather_result(ctx: Context, sender: str, msg: GatherResult) -> None:
+    gather_bus.resolve(msg.request_id, msg)
+
+
+# ---------------------------------------------------------------------------
+# ActionResult handler — resolves futures created in graph.execute_node
+# ---------------------------------------------------------------------------
+
+@agent.on_message(ActionResult)
+async def _on_action_result(ctx: Context, sender: str, msg: ActionResult) -> None:
+    gather_bus.resolve(msg.action_id, msg)
+
 
 # ---------------------------------------------------------------------------
 # Standalone run
