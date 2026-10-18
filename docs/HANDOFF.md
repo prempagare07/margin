@@ -118,9 +118,25 @@ async with span("tool.canvas"):
 
 ---
 
+## Schema differences (Alex's db/schema.sql vs. original plan) — Prem must adapt
+
+Alex's schema is the source of truth. Key changes Prem's code must handle:
+
+1. **`items` has `starts_at`, `ends_at`, `location`** — Alex's comment says these must also be added to `Item` in `shared/protocol.py`. Prem will add them in a coordinated update.
+
+2. **`action_executions` is a separate table** (not `results` jsonb in `plans`). PK is `(plan_id, action_id)`. Prem's `core/approval.py` must write action results there, not into `plans.results`.
+
+3. **`nudges.send_after`** — optional scheduled send time. Prem's scheduler must pass this when creating nudges.
+
+4. **`purchases` table** — Stripe payments land here. Alex's `payments/stripe_flow.py` owns writes; Prem reads `plan` and `pro_until` from `users`.
+
+5. **`flexible_spent_this_month(user_id)`** is a Postgres function — Prem calls it for budget math, does not reimplement it.
+
+6. **`db/migrations/001_prem.sql` is now redundant** — Alex's schema covers all the same tables. Do not run the migration separately.
+
 ## Open questions / blockers
 
-- `db/schema.sql` is empty — Alex needs to add the full schema before `scripts/db_init.py` can run.
-- `db/repo.py` is empty — Prem's approval module uses the interface above; will add a mock until Alex's version lands.
-- `DATABASE_URL` not yet set in `.env` — waiting for Tiger Data credentials.
-- Agent seeds (`MARGIN_SEED` … `LIFE_SEED`) not yet set — both teammates must use the same seeds so agent addresses are stable.
+- `db/repo.py` still empty — Prem's approval module needs `insert_plan`, `approve_plan`, `pending_plan_for`. Will stub locally until Alex's version lands.
+- `shared/protocol.py` needs `starts_at`, `ends_at`, `location` added to `Item` — coordinate with Alex before changing.
+- `PHOTON_WEBHOOK_SECRET` not yet set — needed for P6 webhook signature verification.
+- Alex's Composio/Plaid/Stripe keys not yet in `.env` — needed for real specialist calls (P4 fake mode works without them).
