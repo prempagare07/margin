@@ -6,8 +6,9 @@ import os
 
 import pytest
 
-# Force fake mode for all e2e tests
+# Force fake/in-memory mode — these are in-process logic tests, not DB integration tests
 os.environ["FAKE_SPECIALISTS"] = "1"
+os.environ["DATABASE_URL"] = ""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 

@@ -1,6 +1,10 @@
 """Tests for core/approval.py in-memory path."""
+import os
 import pytest
 import pytest_asyncio
+
+# Force in-memory path — these are logic tests, not DB integration tests
+os.environ["DATABASE_URL"] = ""
 
 from core import approval
 
