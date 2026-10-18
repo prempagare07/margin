@@ -35,6 +35,7 @@ agent = Agent(
     port=8000,
     mailbox=True,
     handle_messages_concurrently=True,
+    publish_agent_details=True,
 )
 
 
