@@ -13,6 +13,18 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
+# Import aspan lazily to avoid circular init; observability may not be inited yet
+def _aspan(op, desc, **kw):
+    try:
+        from core.observability import aspan
+        return aspan(op, desc, **kw)
+    except Exception:
+        from contextlib import asynccontextmanager
+        @asynccontextmanager
+        async def _noop(**_):
+            yield None
+        return _noop()
+
 logger = logging.getLogger(__name__)
 
 load_dotenv()
@@ -102,17 +114,16 @@ async def plan(
     for attempt in range(2):
         try:
             t0 = time.monotonic()
-            result = await _call(_step5_client(), STEP_MODEL, messages,
-                                 schema=schema, images=images, timeout=timeout)
+            async with _aspan("llm.plan", STEP_MODEL, attempt=attempt) as s:
+                result = await _call(_step5_client(), STEP_MODEL, messages,
+                                     schema=schema, images=images, timeout=timeout)
+                if s:
+                    s.set_data("model", "step5")
             return result, "step5"
         except Exception as exc:
             latency_ms = int((time.monotonic() - t0) * 1000)
             _warn = f"step5 attempt {attempt + 1} failed after {latency_ms}ms: {exc}"
             logger.warning(_warn)
-            try:
-                sentry_sdk.logger.warning(_warn)
-            except Exception:
-                pass
             if attempt == 0:
                 continue  # retry once
             break
@@ -120,15 +131,14 @@ async def plan(
     # Fall back to ASI1 (no images support)
     t0 = time.monotonic()
     try:
-        result = await _call(_asi1_client(), ASI1_MODEL, messages,
-                             schema=schema, images=None, timeout=timeout)
-        latency_ms = int((time.monotonic() - t0) * 1000)
-        _warn2 = f"plan() fell back to asi1 after step5 failures (asi1 latency {latency_ms}ms)"
-        logger.warning(_warn2)
-        try:
-            sentry_sdk.logger.warning(_warn2)
-        except Exception:
-            pass
+        async with _aspan("llm.plan.fallback", ASI1_MODEL) as s:
+            result = await _call(_asi1_client(), ASI1_MODEL, messages,
+                                 schema=schema, images=None, timeout=timeout)
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            if s:
+                s.set_data("model", "asi1")
+                s.set_data("latency_ms", latency_ms)
+        logger.warning("plan() fell back to asi1 after step5 failures (%dms)", latency_ms)
         return result, "asi1"
     except Exception as exc:
         raise RuntimeError(f"Both Step5 and ASI1 failed: {exc}") from exc
@@ -141,8 +151,9 @@ async def fast(
     timeout: float = 15,
 ) -> Any:
     """ASI1 only — fast intent classification and card copy."""
-    return await _call(_asi1_client(), ASI1_MODEL, messages,
-                       schema=schema, images=None, timeout=timeout)
+    async with _aspan("llm.fast", ASI1_MODEL):
+        return await _call(_asi1_client(), ASI1_MODEL, messages,
+                           schema=schema, images=None, timeout=timeout)
 
 
 if __name__ == "__main__":

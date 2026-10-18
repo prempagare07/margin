@@ -9,25 +9,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import sentry_sdk
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from standardwebhooks import Webhook, WebhookVerificationError
 
-logger = logging.getLogger(__name__)
+from core.observability import init as _sentry_init
+_sentry_init()
 
-# ---------------------------------------------------------------------------
-# Sentry (best-effort)
-# ---------------------------------------------------------------------------
-_dsn = os.environ.get("SENTRY_DSN", "")
-if _dsn:
-    sentry_sdk.init(
-        dsn=_dsn,
-        traces_sample_rate=0.2,
-        send_default_pii=False,
-        environment=os.environ.get("ENV", "dev"),
-    )
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # App with scheduler lifespan

@@ -270,14 +270,18 @@ async def send_morning_brief(user: dict) -> None:
 
 async def run_morning_briefs() -> None:
     """Called at 7 am America/Phoenix. Sends brief to all active users."""
-    logger.info("morning brief sweep starting")
-    users = await _all_active_users()
-    logger.info("morning brief: %d active users", len(users))
-    for user in users:
-        try:
-            await send_morning_brief(user)
-        except Exception as exc:
-            logger.exception("morning brief error for %s: %s", user.get("user_id"), exc)
+    from core.observability import monitor as obs_monitor
+    @obs_monitor("margin-morning-brief")
+    async def _inner():
+        logger.info("morning brief sweep starting")
+        users = await _all_active_users()
+        logger.info("morning brief: %d active users", len(users))
+        for user in users:
+            try:
+                await send_morning_brief(user)
+            except Exception as exc:
+                logger.exception("morning brief error for %s: %s", user.get("user_id"), exc)
+    await _inner()
 
 
 # ---------------------------------------------------------------------------
@@ -334,13 +338,17 @@ async def send_evening_nudge(user: dict) -> None:
 
 async def run_evening_nudges() -> None:
     """Called at 9 pm America/Phoenix. Sends nudge to all active users."""
-    logger.info("evening nudge sweep starting")
-    users = await _all_active_users()
-    for user in users:
-        try:
-            await send_evening_nudge(user)
-        except Exception as exc:
-            logger.exception("evening nudge error for %s: %s", user.get("user_id"), exc)
+    from core.observability import monitor as obs_monitor
+    @obs_monitor("margin-evening-nudge")
+    async def _inner():
+        logger.info("evening nudge sweep starting")
+        users = await _all_active_users()
+        for user in users:
+            try:
+                await send_evening_nudge(user)
+            except Exception as exc:
+                logger.exception("evening nudge error for %s: %s", user.get("user_id"), exc)
+    await _inner()
 
 
 # ---------------------------------------------------------------------------

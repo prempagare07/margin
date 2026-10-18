@@ -10,6 +10,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from core.observability import init as _sentry_init
+_sentry_init()
+
 from uagents import Agent, Context, Protocol
 from uagents_core.contrib.protocols.chat import (
     ChatAcknowledgement,
