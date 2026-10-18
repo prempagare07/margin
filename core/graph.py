@@ -470,14 +470,55 @@ async def upgrade_node(state: GraphState) -> dict:
     ctx = state["ctx"]
     sender = state["sender"]
     channel = state["channel"]
-    if channel == "asi1":
-        await ctx.send(sender, upgrade_card())
-    else:
-        await send_text(
-            ctx, sender,
-            "Pro is $4.99 / 30 days. Finals Pack is $1.99 (two weeks during finals). "
-            "Open ASI:One to upgrade.",
+    sel = state.get("selection") or {}
+    tier = sel.get("tier")
+
+    # No tier yet — show the upgrade card
+    if not tier or channel != "asi1":
+        if channel == "asi1":
+            await ctx.send(sender, upgrade_card())
+        else:
+            await send_text(
+                ctx, sender,
+                "Pro is $4.99 / 30 days. Finals Pack is $1.99 (two weeks during finals). "
+                "Open ASI:One to upgrade.",
+            )
+        return {}
+
+    # Tier selected — create Stripe checkout and send RequestPayment
+    from uagents_core.contrib.protocols.payment import Funds, RequestPayment
+    from payments.stripe_flow import TIERS, create_checkout
+
+    t = TIERS.get(tier)
+    if not t:
+        await send_text(ctx, sender, f"Unknown tier: {tier!r}")
+        return {}
+
+    try:
+        checkout = await create_checkout(
+            user_id=state["user_id"],
+            tier=tier,
+            session_ref=sender,
         )
+    except Exception as exc:
+        logger.warning("upgrade: checkout failed: %s", exc)
+        await send_text(ctx, sender, "Couldn't start checkout right now. Please try again.")
+        return {}
+
+    amount = f"{t['amount_cents'] / 100:.2f}"
+    req = RequestPayment(
+        accepted_funds=[Funds(currency="USD", amount=amount, payment_method="stripe")],
+        recipient=str(getattr(ctx, "address", sender)),
+        deadline_seconds=1800,
+        reference=sender,
+        description=f"{t['name']} — ${amount}",
+        metadata={"stripe": checkout, "service": f"margin_{tier}"},
+    )
+    await ctx.send(sender, req)
+    await send_text(
+        ctx, sender,
+        f"Complete checkout to activate {t['name']}. I'll confirm here once paid.",
+    )
     return {}
 
 
