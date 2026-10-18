@@ -27,7 +27,6 @@ from uagents_core.contrib.protocols.payment import (
     CommitPayment,
     CompletePayment,
     RejectPayment,
-    payment_protocol_spec,
 )
 
 agent = Agent(
@@ -76,7 +75,6 @@ _proto = make_chat_protocol(
 )
 
 agent.include(_proto, publish_manifest=True)
-agent.include(payment_protocol_spec, publish_manifest=True)
 
 
 # ---------------------------------------------------------------------------
