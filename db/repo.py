@@ -46,7 +46,7 @@ async def get_pool() -> AsyncConnectionPool:
             kwargs={
                 "row_factory": dict_row,
                 "connect_timeout": 5,
-                "options": "-c timezone=UTC -c statement_timeout=10000",
+                "options": "-c timezone=UTC",
             },
         )
         _pools[loop] = pool

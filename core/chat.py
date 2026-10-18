@@ -41,6 +41,7 @@ def make_chat_protocol(
 
     @proto.on_message(ChatMessage)
     async def _handle(ctx: Context, sender: str, msg: ChatMessage) -> None:
+        logger.info("[%s] ChatMessage from %s", agent_name, sender[:20])
         _set_user(sender)
         await ctx.send(
             sender,

@@ -8,7 +8,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
-from db import repo
+try:
+    from db import repo
+except Exception:  # psycopg not installed in test env
+    repo = None  # type: ignore[assignment]
 
 
 class InvalidSubmission(ValueError):
