@@ -18,6 +18,7 @@ from uagents_core.contrib.protocols.chat import (
 )
 
 from core.llm import fast
+from core.observability import set_user as _set_user
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ def make_chat_protocol(
 
     @proto.on_message(ChatMessage)
     async def _handle(ctx: Context, sender: str, msg: ChatMessage) -> None:
+        _set_user(sender)
         await ctx.send(
             sender,
             ChatAcknowledgement(

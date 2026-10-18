@@ -134,6 +134,12 @@ def start_transaction(name: str, op: str = "task", **data: Any) -> Any:
     return tx
 
 
+def set_user(user_id: str) -> None:
+    """Set per-request user context so all events/spans are correlated by user_id."""
+    sentry_sdk.set_user({"id": user_id})
+    sentry_sdk.set_tag("user_id", user_id)
+
+
 # ---------------------------------------------------------------------------
 # Structured log helpers (Sentry Logs — warning+ sent to Sentry)
 # ---------------------------------------------------------------------------
